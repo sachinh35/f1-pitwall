@@ -1,0 +1,515 @@
+{
+  "car_data_raw_payload": "7ZexagMxDIbfRXMSJFnyyV5D36BdWjqEEmih3JBmO+7dc+d2CDSFnpaSRotsjH/kX7I/8AB3/fHwtv+A+jTAw/EFKjCyronWCe9Jq1KlsulyKZbpEVaw3R2m3QPQHLavu77fv7cFhIor4BZTi9Kifs7nYRzbokuny3U067IzH6FXyF6htzTk8NhqQ+YU8hKPhOeH5eR0yZ3zsMnbyeS44y2jXPLYaf4mJZSvEsn5E3FchJZXLz0SQeVfmM3evpiXBOZr6CT9EVWMG7RSkgWpglTLSRWc+kNOpUJ6Q5ziiVNoOUAVoApQXRmoJN0QqESKmcbfL0AVoLo2UGX5X6B6Hk8=",
+  "car_data_expected_first_entry_utc": "2025-11-30T15:51:19.7699861Z",
+  "car_data_expected_first_entry_cars": {
+    "1": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 0
+      }
+    },
+    "4": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 0
+      }
+    },
+    "5": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 1
+      }
+    },
+    "6": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 0
+      }
+    },
+    "10": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 0
+      }
+    },
+    "12": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 0
+      }
+    },
+    "14": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 0
+      }
+    },
+    "16": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 1
+      }
+    },
+    "18": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 1
+      }
+    },
+    "22": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 100,
+        "45": 0
+      }
+    },
+    "23": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 0
+      }
+    },
+    "27": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 1
+      }
+    },
+    "30": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 0
+      }
+    },
+    "31": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 1
+      }
+    },
+    "43": {
+      "Channels": {
+        "0": 756,
+        "2": 0,
+        "3": 0,
+        "4": 104,
+        "5": 104,
+        "45": 0
+      }
+    },
+    "44": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 1
+      }
+    },
+    "55": {
+      "Channels": {
+        "0": 4052,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 0
+      }
+    },
+    "63": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 0
+      }
+    },
+    "81": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 0
+      }
+    },
+    "87": {
+      "Channels": {
+        "0": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "45": 1
+      }
+    }
+  },
+  "position_raw_payload": "7ZQ9b8JADIb/i+cEnc/2fe3MrVSGlqoDqhiiCqggnVD+exNyVNcBM7TjLUigPJzf85vnDI+HU9d3hz2k1zOsut321G92n5DAGistYktmhZIEE8aFCxjF0xoaWO77Y7c9QToDTh9P/ab/Gr/Cw3513Lx/jI88Q2ot+tDAC6TobANrSEgyNMAqgnhBAmNG3IiIgiB5d0FajmZmGEfGaQyLnRmSPBqbkUGjQtP/T5ANVEJWC2TifFIwrgiE2iWgGMwHuV/T3YlE10hYQkGFQo5ExhSQ1SIh0/Wk4EuI9MvLN259LCGvQobzaikUEOlrugFpVUXCuaqtRC5KxGomnzOJz7sVnhh1tzemE73i7PN0bMuKa9ONzaPcPF80L+hvrIvzG8tSMuqSKF4TiftJNAzNfaUEh9HGWJVSlVKVUpXyZ6VYszCMcfy5KqUqpSqlKuU/lEIWg6tCqUKpQqlCuSuUt+Eb",
+  "position_expected_first_entry_timestamp": "2025-11-30T15:51:19.6819573Z",
+  "position_expected_first_entry_entries": {
+    "1": {
+      "Status": "OnTrack",
+      "X": -2178,
+      "Y": 962,
+      "Z": 135
+    },
+    "4": {
+      "Status": "OnTrack",
+      "X": -2111,
+      "Y": 841,
+      "Z": 136
+    },
+    "5": {
+      "Status": "OnTrack",
+      "X": -1376,
+      "Y": -490,
+      "Z": 141
+    },
+    "6": {
+      "Status": "OnTrack",
+      "X": -1452,
+      "Y": -352,
+      "Z": 140
+    },
+    "10": {
+      "Status": "OnTrack",
+      "X": -1490,
+      "Y": -283,
+      "Z": 140
+    },
+    "12": {
+      "Status": "OnTrack",
+      "X": -2092,
+      "Y": 806,
+      "Z": 136
+    },
+    "14": {
+      "Status": "OnTrack",
+      "X": -1501,
+      "Y": -262,
+      "Z": 140
+    },
+    "16": {
+      "Status": "OnTrack",
+      "X": -1453,
+      "Y": -351,
+      "Z": 140
+    },
+    "18": {
+      "Status": "OnTrack",
+      "X": -1480,
+      "Y": -300,
+      "Z": 140
+    },
+    "22": {
+      "Status": "OnTrack",
+      "X": -1433,
+      "Y": -387,
+      "Z": 140
+    },
+    "23": {
+      "Status": "OnTrack",
+      "X": -1492,
+      "Y": -279,
+      "Z": 140
+    },
+    "27": {
+      "Status": "OnTrack",
+      "X": -1404,
+      "Y": -438,
+      "Z": 140
+    },
+    "30": {
+      "Status": "OnTrack",
+      "X": -1404,
+      "Y": -438,
+      "Z": 140
+    },
+    "31": {
+      "Status": "OnTrack",
+      "X": -1318,
+      "Y": -594,
+      "Z": 141
+    },
+    "43": {
+      "Status": "OnTrack",
+      "X": -1792,
+      "Y": 576,
+      "Z": 154
+    },
+    "44": {
+      "Status": "OnTrack",
+      "X": -1404,
+      "Y": -438,
+      "Z": 140
+    },
+    "55": {
+      "Status": "OnTrack",
+      "X": -1347,
+      "Y": -542,
+      "Z": 141
+    },
+    "63": {
+      "Status": "OnTrack",
+      "X": -2093,
+      "Y": 807,
+      "Z": 136
+    },
+    "81": {
+      "Status": "OnTrack",
+      "X": -2169,
+      "Y": 945,
+      "Z": 136
+    },
+    "87": {
+      "Status": "OnTrack",
+      "X": -1394,
+      "Y": -456,
+      "Z": 140
+    }
+  },
+  "timing_data_lap_progression_driver_81": [
+    {
+      "Lines": {
+        "81": {
+          "NumberOfLaps": 1,
+          "Sectors": {
+            "2": {
+              "Value": "25.599",
+              "OverallFastest": true,
+              "PersonalFastest": true
+            }
+          },
+          "Speeds": {
+            "FL": {
+              "Value": "276",
+              "OverallFastest": true,
+              "PersonalFastest": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "Lines": {
+        "81": {
+          "NumberOfLaps": 2,
+          "Sectors": {
+            "2": {
+              "Value": "25.759"
+            }
+          },
+          "Speeds": {
+            "FL": {
+              "Value": "276",
+              "PersonalFastest": true
+            }
+          },
+          "BestLapTime": {
+            "Value": "1:27.150",
+            "Lap": 2
+          },
+          "LastLapTime": {
+            "Value": "1:27.150",
+            "OverallFastest": true,
+            "PersonalFastest": true
+          }
+        }
+      }
+    },
+    {
+      "Lines": {
+        "81": {
+          "NumberOfLaps": 3,
+          "Sectors": {
+            "2": {
+              "Value": "25.596",
+              "OverallFastest": true,
+              "PersonalFastest": true
+            }
+          },
+          "Speeds": {
+            "FL": {
+              "Value": "277",
+              "PersonalFastest": true
+            }
+          },
+          "BestLapTime": {
+            "Value": "1:26.930",
+            "Lap": 3
+          },
+          "LastLapTime": {
+            "Value": "1:26.930"
+          }
+        },
+        "22": {
+          "BestLapTime": {
+            "Value": ""
+          }
+        }
+      }
+    },
+    {
+      "Lines": {
+        "81": {
+          "NumberOfLaps": 4,
+          "Sectors": {
+            "2": {
+              "Value": "25.559",
+              "OverallFastest": true,
+              "PersonalFastest": true
+            }
+          },
+          "Speeds": {
+            "FL": {
+              "Value": "277",
+              "PersonalFastest": true
+            }
+          },
+          "LastLapTime": {
+            "Value": "1:27.217",
+            "OverallFastest": false,
+            "PersonalFastest": false
+          }
+        }
+      }
+    },
+    {
+      "Lines": {
+        "81": {
+          "NumberOfLaps": 5,
+          "Sectors": {
+            "2": {
+              "Value": "25.430",
+              "PersonalFastest": true
+            }
+          },
+          "Speeds": {
+            "FL": {
+              "Value": "278",
+              "PersonalFastest": true
+            }
+          },
+          "BestLapTime": {
+            "Value": "1:26.899",
+            "Lap": 5
+          },
+          "LastLapTime": {
+            "Value": "1:26.899",
+            "OverallFastest": true,
+            "PersonalFastest": true
+          }
+        }
+      }
+    },
+    {
+      "Lines": {
+        "81": {
+          "NumberOfLaps": 6,
+          "Sectors": {
+            "2": {
+              "Value": "25.389",
+              "PersonalFastest": true
+            }
+          },
+          "Speeds": {
+            "FL": {
+              "Value": "277"
+            }
+          },
+          "BestLapTime": {
+            "Value": "1:26.720",
+            "Lap": 6
+          },
+          "LastLapTime": {
+            "Value": "1:26.720",
+            "OverallFastest": true
+          }
+        },
+        "1": {
+          "LastLapTime": {
+            "OverallFastest": false
+          }
+        }
+      }
+    }
+  ],
+  "team_radio_list_form": {
+    "Captures": [
+      {
+        "Utc": "2025-11-30T16:10:50.561Z",
+        "RacingNumber": "1",
+        "Path": "TeamRadio/MAXVER01_1_20251130_191032.mp3"
+      }
+    ],
+    "_kf": true
+  },
+  "team_radio_dict_form": {
+    "Captures": {
+      "1": {
+        "Utc": "2025-11-30T16:16:26.708Z",
+        "RacingNumber": "27",
+        "Path": "TeamRadio/NICHUL01_27_20251130_191606.mp3"
+      }
+    }
+  }
+}

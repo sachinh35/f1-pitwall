@@ -1,0 +1,35 @@
+[project]
+name = "f1-dashboard-backend"
+version = "0.1.0"
+description = "F1 live dashboard backend"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "requests",
+    "httpx",
+    "asyncpg",
+    "signalrcore",
+    "platformdirs",
+    "pyjwt",
+    "cryptography",
+    "websockets",
+    "sse-starlette",
+    "pywhispercpp",
+    "numpy",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

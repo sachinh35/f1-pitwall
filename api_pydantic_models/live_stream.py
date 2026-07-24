@@ -2,7 +2,9 @@
 Pydantic models for live streaming API requests and responses.
 """
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import List, Optional
+
+from utils.team_radio_db import TeamRadioDB
 
 
 class StartStreamRequest(BaseModel):
@@ -32,4 +34,23 @@ class StartStreamResponse(BaseModel):
     message: str = Field(..., description="Status message")
     stream_id: str = Field(..., description="Unique identifier for this stream session")
     log_file: str = Field(..., description="Path to the log file where stream data is being saved")
+
+
+class SimulateStreamRequest(BaseModel):
+    """Request model for starting a replay of a captured stream_logs/*.jsonl file."""
+    log_file: str = Field(
+        default="f1_stream_1764517880_race_qatar.jsonl",
+        description="Filename under stream_logs/ to replay",
+    )
+    speed_factor: float = Field(
+        default=20.0,
+        gt=0,
+        description="Playback speed multiplier - the real gaps between messages, scaled down by this factor",
+    )
+
+
+class GetTeamRadioResponse(BaseModel):
+    """Response model for fetching a session's team radio clips - live or historical, same table."""
+    session_key: int
+    clips: List[TeamRadioDB]
 

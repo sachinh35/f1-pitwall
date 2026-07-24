@@ -1,7 +1,23 @@
--- F1 Lap Data Table Schema
--- This table stores per-lap telemetry data from F1 sessions
+-- 0001: Baseline schema, expressed idempotently.
+-- Everything here already exists in the running database (created by hand before
+-- this migration runner existed) - this file exists so a *fresh* database reaches
+-- the same starting point, and so it's safe to re-run against the current one.
 
-CREATE TABLE lap_data (
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- lap_data
+CREATE TABLE IF NOT EXISTS lap_data (
     id SERIAL PRIMARY KEY,
     meeting_key INTEGER NOT NULL,
     session_key INTEGER NOT NULL,
@@ -21,44 +37,21 @@ CREATE TABLE lap_data (
     segments_sector_3 INTEGER[],
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    -- Ensure we don't store duplicate laps for the same session/driver
-    CONSTRAINT unique_lap_per_driver_session 
-        UNIQUE(session_key, driver_number, lap_number)
+    CONSTRAINT unique_lap_per_driver_session UNIQUE(session_key, driver_number, lap_number)
 );
 
--- Index for primary query pattern: get all laps for a session/driver combo
-CREATE INDEX idx_session_driver_lap 
-    ON lap_data(session_key, driver_number, lap_number);
+CREATE INDEX IF NOT EXISTS idx_session_driver_lap ON lap_data(session_key, driver_number, lap_number);
+CREATE INDEX IF NOT EXISTS idx_session_key ON lap_data(session_key);
+CREATE INDEX IF NOT EXISTS idx_meeting_key ON lap_data(meeting_key);
+CREATE INDEX IF NOT EXISTS idx_driver_number ON lap_data(driver_number);
 
--- Index for session lookups (useful for checking if session data exists)
-CREATE INDEX idx_session_key 
-    ON lap_data(session_key);
-
--- Index for meeting key lookups (if needed later)
-CREATE INDEX idx_meeting_key 
-    ON lap_data(meeting_key);
-
--- Index for driver number queries across sessions
-CREATE INDEX idx_driver_number 
-    ON lap_data(driver_number);
-
--- Function to automatically update updated_at timestamp
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = CURRENT_TIMESTAMP;
-    RETURN NEW;
-END;
-$$ language 'plpgsql';
-
--- Trigger to update updated_at on row updates
-CREATE TRIGGER update_lap_data_updated_at 
+DROP TRIGGER IF EXISTS update_lap_data_updated_at ON lap_data;
+CREATE TRIGGER update_lap_data_updated_at
     BEFORE UPDATE ON lap_data
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
--- Stints Table Schema
+-- stints
 CREATE TABLE IF NOT EXISTS stints (
     id SERIAL PRIMARY KEY,
     meeting_key INTEGER NOT NULL,
@@ -77,12 +70,13 @@ CREATE TABLE IF NOT EXISTS stints (
 CREATE INDEX IF NOT EXISTS idx_stints_session ON stints(session_key);
 CREATE INDEX IF NOT EXISTS idx_stints_session_driver ON stints(session_key, driver_number);
 
-CREATE TRIGGER update_stints_updated_at 
+DROP TRIGGER IF EXISTS update_stints_updated_at ON stints;
+CREATE TRIGGER update_stints_updated_at
     BEFORE UPDATE ON stints
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
--- Race Control Events Table Schema
+-- race_control_events
 CREATE TABLE IF NOT EXISTS race_control_events (
     id SERIAL PRIMARY KEY,
     meeting_key INTEGER NOT NULL,
@@ -103,8 +97,33 @@ CREATE INDEX IF NOT EXISTS idx_race_control_session_date ON race_control_events(
 CREATE INDEX IF NOT EXISTS idx_race_control_driver ON race_control_events(session_key, driver_number) WHERE driver_number IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_race_control_sector ON race_control_events(session_key, sector) WHERE sector IS NOT NULL;
 
-CREATE TRIGGER update_race_control_events_updated_at 
+DROP TRIGGER IF EXISTS update_race_control_events_updated_at ON race_control_events;
+CREATE TRIGGER update_race_control_events_updated_at
     BEFORE UPDATE ON race_control_events
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+-- live_streams / live_lap_times (write-side staging tables while a session is live)
+CREATE TABLE IF NOT EXISTS live_streams (
+    id SERIAL PRIMARY KEY,
+    stream_id VARCHAR(50) NOT NULL UNIQUE,
+    race_name VARCHAR(255),
+    start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS live_lap_times (
+    id SERIAL PRIMARY KEY,
+    stream_id VARCHAR(50) NOT NULL REFERENCES live_streams(stream_id),
+    driver_number INTEGER NOT NULL,
+    lap_number INTEGER NOT NULL,
+    lap_time DECIMAL(10, 3),
+    sector_1 DECIMAL(10, 3),
+    sector_2 DECIMAL(10, 3),
+    sector_3 DECIMAL(10, 3),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_live_lap_per_driver UNIQUE(stream_id, driver_number, lap_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_live_lap_times_stream ON live_lap_times(stream_id);
+CREATE INDEX IF NOT EXISTS idx_live_lap_times_stream_driver ON live_lap_times(stream_id, driver_number);

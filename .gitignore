@@ -1,5 +1,8 @@
-venv/*
+.venv/*
 .DS_Store
 .idea/*
 *.pyc
+__pycache__/
 stream_logs/*
+audio_cache/*
+.pytest_cache/
