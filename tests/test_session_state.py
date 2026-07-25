@@ -2,6 +2,7 @@
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Dict
 
 import pytest
 
@@ -126,12 +127,21 @@ def test_completed_lap_gap_to_ahead_seconds_is_none_when_unparseable() -> None:
     assert diff.completed_laps[0].gap_to_ahead_seconds is None
 
 
-def test_lap_completion_skipped_when_no_telemetry_was_buffered() -> None:
+def test_lap_completion_still_produced_when_no_telemetry_was_buffered() -> None:
+    """CarData.z can be absent for an entire live session (confirmed against a real one) -
+    lap number/duration/gap-to-ahead must still reach Postgres even with no telemetry to
+    attach; only the aggregates come back all-None."""
     state = SessionState()
     msgs = FIXTURES["timing_data_lap_progression_driver_81"]
     state.apply("TimingData", msgs[0])
     diff = state.apply("TimingData", msgs[1])  # no telemetry buffered this time
-    assert diff.completed_laps == []
+
+    assert len(diff.completed_laps) == 1
+    completed = diff.completed_laps[0]
+    assert completed.lap_number == 1
+    assert completed.lap_duration_seconds == pytest.approx(87.150)
+    assert completed.aggregates.avg_speed_kmh is None
+    assert completed.aggregates.max_speed_kmh is None
 
 
 def test_current_lap_for_tracks_latest_value() -> None:
@@ -284,6 +294,28 @@ def test_unknown_topic_does_not_raise() -> None:
     diff = state.apply("Heartbeat", {"Utc": "2025-01-01T00:00:00Z"})
     assert diff.event_name == "Heartbeat"
     assert diff.changed_driver_numbers == []
+
+
+# ---- event_time (threaded through every diff, regardless of topic) ----
+
+def test_apply_attaches_event_time_to_the_returned_diff() -> None:
+    state = SessionState()
+    event_time = datetime(2026, 7, 25, 16, 31, 47)
+    diff = state.apply("WeatherData", {"AirTemp": "25.1"}, event_time=event_time)
+    assert diff.event_time == event_time
+
+
+def test_apply_event_time_defaults_to_none() -> None:
+    state = SessionState()
+    diff = state.apply("WeatherData", {"AirTemp": "25.1"})
+    assert diff.event_time is None
+
+
+def test_apply_attaches_event_time_even_for_an_unknown_topic() -> None:
+    state = SessionState()
+    event_time = datetime(2026, 7, 25, 16, 31, 47)
+    diff = state.apply("Heartbeat", {"Utc": "..."}, event_time=event_time)
+    assert diff.event_time == event_time
 
 
 # ---- SessionInfo: session_key/meeting_key capture ----
@@ -475,3 +507,332 @@ def test_battle_radar_touched_reported_on_diff_and_reflected_in_snapshot() -> No
     )
     assert diff.battle_radar_touched == [44]
     assert state.snapshot()["battle_radar"] == state.battle_radar
+
+
+# ---- qualifying_part (SessionData.Series -> QualifyingPart) ----
+# Confirmed live against a real Q1->Q2 transition: F1 sends this exact shape
+# ({"Series": {"2": {"Utc": ..., "QualifyingPart": 2}}}) at the instant the new segment
+# begins, simultaneously with every driver's TimingData resetting.
+
+def test_qualifying_part_starts_unset() -> None:
+    state = SessionState()
+    assert state.qualifying_part is None
+
+
+def test_qualifying_part_defaults_to_q1_once_session_info_reveals_qualifying_type() -> None:
+    """F1 never sends an explicit QualifyingPart:1 announcement (confirmed live - only the
+    Q1->Q2 and Q2->Q3 transitions get one), so this default is the only way qualifying_part
+    is ever "Q1" rather than staying None for the whole first segment."""
+    state = SessionState()
+    state.apply("SessionInfo", {"Key": 9850, "Type": "Qualifying"})
+    assert state.qualifying_part == "Q1"
+
+
+def test_qualifying_part_stays_none_for_a_non_qualifying_session() -> None:
+    state = SessionState()
+    state.apply("SessionInfo", {"Key": 9850, "Type": "Race"})
+    assert state.qualifying_part is None
+
+
+def test_session_info_default_does_not_clobber_an_already_known_part() -> None:
+    state = SessionState()
+    state.apply("SessionInfo", {"Key": 9850, "Type": "Qualifying"})
+    state.apply("SessionData", {"Series": {"2": {"QualifyingPart": 2}}})
+
+    state.apply("SessionInfo", {"ArchiveStatus": {"Status": "Complete"}})  # another SessionInfo update
+
+    assert state.qualifying_part == "Q2"  # must not reset back to "Q1"
+
+
+def test_qualifying_part_set_from_session_data_series() -> None:
+    state = SessionState()
+    state.apply("SessionData", {"Series": {"1": {"Utc": "2026-07-25T14:00:00Z", "QualifyingPart": 1}}})
+    assert state.qualifying_part == "Q1"
+
+    state.apply("SessionData", {"Series": {"2": {"Utc": "2026-07-25T14:24:00Z", "QualifyingPart": 2}}})
+    assert state.qualifying_part == "Q2"
+
+
+def test_qualifying_part_ignores_session_data_without_a_series() -> None:
+    state = SessionState()
+    state.apply("SessionData", {"Series": {"1": {"QualifyingPart": 1}}})
+    state.apply("SessionData", {"StatusSeries": {"5": {"SessionStatus": "Finished"}}})
+    assert state.qualifying_part == "Q1"
+
+
+def test_qualifying_part_reflected_in_snapshot() -> None:
+    state = SessionState()
+    state.apply("SessionData", {"Series": {"3": {"QualifyingPart": 3}}})
+    assert state.snapshot()["qualifying_part"] == "Q3"
+
+
+# ---- eliminated_drivers (bottom QUALIFYING_ELIMINATION_COUNT at each part transition) ----
+
+def _set_positions(state: SessionState, positions: Dict[int, str]) -> None:
+    state.apply("TimingData", {"Lines": {str(d): {"Position": p} for d, p in positions.items()}})
+
+
+def test_no_eliminations_on_the_very_first_qualifying_part() -> None:
+    state = SessionState()
+    _set_positions(state, {d: str(d) for d in range(1, 23)})  # 22 drivers, positions 1-22
+    state.apply("SessionData", {"Series": {"1": {"QualifyingPart": 1}}})
+    assert state.eliminated_drivers == set()
+
+
+def test_bottom_six_eliminated_on_transition_to_q2() -> None:
+    state = SessionState()
+    _set_positions(state, {d: str(d) for d in range(1, 23)})  # driver N sits in position N
+    state.apply("SessionData", {"Series": {"1": {"QualifyingPart": 1}}})
+
+    state.apply("SessionData", {"Series": {"2": {"QualifyingPart": 2}}})
+
+    assert state.eliminated_drivers == {17, 18, 19, 20, 21, 22}
+    assert state.qualifying_part == "Q2"
+
+
+def test_bottom_six_eliminated_on_transition_to_q3_excludes_already_eliminated() -> None:
+    state = SessionState()
+    _set_positions(state, {d: str(d) for d in range(1, 23)})
+    state.apply("SessionData", {"Series": {"1": {"QualifyingPart": 1}}})
+    state.apply("SessionData", {"Series": {"2": {"QualifyingPart": 2}}})  # eliminates 17-22
+
+    # Q2 reshuffles among the 16 remaining - simulate a new bottom-6 among positions 11-16.
+    _set_positions(state, {d: str(d) for d in range(1, 17)})
+    state.apply("SessionData", {"Series": {"3": {"QualifyingPart": 3}}})
+
+    assert state.eliminated_drivers == {11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22}
+
+
+def test_eliminated_drivers_skip_entries_without_a_known_position() -> None:
+    state = SessionState()
+    _set_positions(state, {d: str(d) for d in range(1, 17)})  # only 16 of 22 have a Position
+    state.apply("TimingData", {"Lines": {"17": {}, "18": {}}})  # seen, but no Position yet
+    state.apply("SessionData", {"Series": {"1": {"QualifyingPart": 1}}})
+
+    state.apply("SessionData", {"Series": {"2": {"QualifyingPart": 2}}})
+
+    assert state.eliminated_drivers == {11, 12, 13, 14, 15, 16}
+
+
+def test_eliminated_drivers_reflected_in_snapshot() -> None:
+    state = SessionState()
+    _set_positions(state, {d: str(d) for d in range(1, 23)})
+    state.apply("SessionData", {"Series": {"1": {"QualifyingPart": 1}}})
+    state.apply("SessionData", {"Series": {"2": {"QualifyingPart": 2}}})
+
+    assert state.snapshot()["eliminated_drivers"] == [17, 18, 19, 20, 21, 22]
+
+
+# ---- qualifying_gaps (computed from BestLapTime, never trusted from F1's Stats field) ----
+
+def _set_best_lap(state: SessionState, driver_number: int, value: str) -> None:
+    state.apply("TimingData", {"Lines": {str(driver_number): {"BestLapTime": {"Value": value}}}})
+
+
+def test_leader_has_zero_gap() -> None:
+    state = SessionState()
+    _set_best_lap(state, 1, "1:20.000")
+    assert state.qualifying_gaps[1] == 0.0
+
+
+def test_gap_is_the_difference_to_the_leader() -> None:
+    state = SessionState()
+    _set_best_lap(state, 1, "1:20.000")
+    _set_best_lap(state, 44, "1:20.500")
+    assert state.qualifying_gaps[1] == 0.0
+    assert state.qualifying_gaps[44] == pytest.approx(0.5)
+
+
+def test_gap_recomputed_for_every_driver_when_the_leader_changes() -> None:
+    """The core bug this fixes: F1's own Stats field never updates the outgoing leader's
+    gap back to a nonzero value, or the new leader's down to zero - confirmed live (a real
+    P1 driver kept showing a stale nonzero gap). Our own computation must get this right."""
+    state = SessionState()
+    _set_best_lap(state, 1, "1:20.000")  # 1 leads
+    _set_best_lap(state, 44, "1:19.500")  # 44 takes over as leader
+
+    assert state.qualifying_gaps[44] == 0.0
+    assert state.qualifying_gaps[1] == pytest.approx(0.5)
+
+
+def test_driver_with_no_valid_best_lap_has_no_gap_entry() -> None:
+    state = SessionState()
+    _set_best_lap(state, 1, "1:20.000")
+    state.apply("TimingData", {"Lines": {"44": {"Position": "2"}}})  # seen, no BestLapTime yet
+
+    assert 44 not in state.qualifying_gaps
+
+
+def test_deleted_best_lap_removes_driver_from_gaps_and_recomputes_leader() -> None:
+    state = SessionState()
+    _set_best_lap(state, 1, "1:19.000")  # leader
+    _set_best_lap(state, 44, "1:20.000")
+    assert state.qualifying_gaps[44] == pytest.approx(1.0)
+
+    _set_best_lap(state, 1, "")  # driver 1's only lap deleted - F1 clears BestLapTime.Value
+
+    assert 1 not in state.qualifying_gaps
+    assert state.qualifying_gaps[44] == 0.0  # 44 is now the only valid time, so the new leader
+
+
+def test_qualifying_gaps_reset_on_a_new_qualifying_part() -> None:
+    state = SessionState()
+    state.apply("SessionData", {"Series": {"1": {"QualifyingPart": 1}}})
+    _set_best_lap(state, 1, "1:20.000")
+    assert state.qualifying_gaps  # non-empty
+
+    state.apply("SessionData", {"Series": {"2": {"QualifyingPart": 2}}})
+
+    assert state.qualifying_gaps == {}
+
+
+def test_qualifying_gaps_reflected_in_snapshot() -> None:
+    state = SessionState()
+    _set_best_lap(state, 1, "1:20.000")
+    assert state.snapshot()["qualifying_gaps"] == {1: 0.0}
+
+
+# ---- qualifying_part_results (persisted snapshot at the end of each segment) ----
+
+def test_no_results_snapshot_on_the_very_first_qualifying_part() -> None:
+    state = SessionState()
+    _set_positions(state, {1: "1", 2: "2"})
+    diff = state.apply("SessionData", {"Series": {"1": {"QualifyingPart": 1}}})
+    assert diff.qualifying_part_results == []
+
+
+def test_results_snapshot_produced_on_transition_tagged_with_the_ending_part() -> None:
+    state = SessionState()
+    _set_positions(state, {d: str(d) for d in range(1, 23)})
+    state.apply("SessionData", {"Series": {"1": {"QualifyingPart": 1}}})
+    _set_best_lap(state, 1, "1:20.000")
+
+    diff = state.apply("SessionData", {"Series": {"2": {"QualifyingPart": 2}}})
+
+    assert len(diff.qualifying_part_results) == 22
+    entry_for_1 = next(r for r in diff.qualifying_part_results if r.driver_number == 1)
+    assert entry_for_1.qualifying_part == "Q1"  # ending part, not "Q2"
+    assert entry_for_1.position == 1
+    assert entry_for_1.best_lap_seconds == pytest.approx(80.0)
+    assert entry_for_1.gap_to_leader_seconds == pytest.approx(0.0)
+    assert entry_for_1.eliminated is False
+
+    entry_for_22 = next(r for r in diff.qualifying_part_results if r.driver_number == 22)
+    assert entry_for_22.eliminated is True  # bottom 6 of positions 1-22
+
+
+def test_results_snapshot_entry_has_none_fields_for_a_driver_with_no_valid_lap() -> None:
+    state = SessionState()
+    _set_positions(state, {d: str(d) for d in range(1, 23)})
+    state.apply("SessionData", {"Series": {"1": {"QualifyingPart": 1}}})
+
+    diff = state.apply("SessionData", {"Series": {"2": {"QualifyingPart": 2}}})
+
+    entry = next(r for r in diff.qualifying_part_results if r.driver_number == 1)
+    assert entry.best_lap_seconds is None
+    assert entry.gap_to_leader_seconds is None
+
+
+def test_finalised_session_status_snapshots_the_current_part_once() -> None:
+    state = SessionState()
+    _set_positions(state, {1: "1", 2: "2"})
+    state.apply("SessionData", {"Series": {"3": {"QualifyingPart": 3}}})
+    _set_best_lap(state, 1, "1:15.000")
+
+    diff = state.apply("SessionStatus", {"Status": "Finalised"})
+
+    assert len(diff.qualifying_part_results) == 2
+    assert diff.qualifying_part_results[0].qualifying_part == "Q3"
+
+    # A second "Finalised" message must not re-trigger the snapshot.
+    diff2 = state.apply("SessionStatus", {"Status": "Finalised"})
+    assert diff2.qualifying_part_results == []
+
+
+def test_finalised_session_status_is_a_no_op_outside_qualifying() -> None:
+    state = SessionState()
+    diff = state.apply("SessionStatus", {"Status": "Finalised"})
+    assert diff.qualifying_part_results == []
+
+
+def test_non_finalised_session_status_does_not_snapshot() -> None:
+    state = SessionState()
+    state.apply("SessionData", {"Series": {"1": {"QualifyingPart": 1}}})
+    diff = state.apply("SessionStatus", {"Status": "Started"})
+    assert diff.qualifying_part_results == []
+
+
+def test_completed_lap_tagged_with_current_qualifying_part() -> None:
+    state = SessionState()
+    state.apply("SessionData", {"Series": {"2": {"QualifyingPart": 2}}})
+    msgs = FIXTURES["timing_data_lap_progression_driver_81"]
+
+    state.apply("TimingData", msgs[0])
+    state._buffer_for(81).add_car_sample(
+        utc=datetime(2025, 11, 30, 16, 0, 0),
+        rpm=11000, speed_kmh=300, gear=8, throttle_pct=100, brake_pct=0, drs=12,
+    )
+    diff = state.apply("TimingData", msgs[1])
+
+    assert diff.completed_laps[0].qualifying_part == "Q2"
+
+
+def test_completed_lap_qualifying_part_is_none_outside_qualifying() -> None:
+    state = SessionState()
+    msgs = FIXTURES["timing_data_lap_progression_driver_81"]
+
+    state.apply("TimingData", msgs[0])
+    state._buffer_for(81).add_car_sample(
+        utc=datetime(2025, 11, 30, 16, 0, 0),
+        rpm=11000, speed_kmh=300, gear=8, throttle_pct=100, brake_pct=0, drs=12,
+    )
+    diff = state.apply("TimingData", msgs[1])
+
+    assert diff.completed_laps[0].qualifying_part is None
+
+
+# ---- deleted-lap parsing from RaceControlMessages ----
+# Both message formats confirmed live in a real qualifying session.
+
+def test_race_control_parses_deletion_with_explicit_time() -> None:
+    state = SessionState()
+    diff = state.apply(
+        "RaceControlMessages",
+        {"Messages": {"1": {"Message": "CAR 55 (SAI) TIME 1:23.576 DELETED - TRACK LIMITS AT TURN 4 LAP 3 16:02:17"}}},
+    )
+    assert len(diff.deleted_laps) == 1
+    assert diff.deleted_laps[0].driver_number == 55
+    assert diff.deleted_laps[0].lap_number == 3
+
+
+def test_race_control_parses_deletion_without_explicit_time() -> None:
+    state = SessionState()
+    diff = state.apply(
+        "RaceControlMessages",
+        {"Messages": {"1": {"Message": "CAR 10 (GAS) LAP DELETED - TRACK LIMITS AT TURN 1 LAP 4 16:08:19 (PIT)"}}},
+    )
+    assert len(diff.deleted_laps) == 1
+    assert diff.deleted_laps[0].driver_number == 10
+    assert diff.deleted_laps[0].lap_number == 4
+
+
+def test_race_control_ignores_messages_without_a_deletion() -> None:
+    state = SessionState()
+    diff = state.apply(
+        "RaceControlMessages", {"Messages": {"1": {"Message": "GREEN LIGHT - PIT EXIT OPEN"}}}
+    )
+    assert diff.deleted_laps == []
+
+
+def test_race_control_handles_multiple_deletions_in_one_message() -> None:
+    state = SessionState()
+    diff = state.apply(
+        "RaceControlMessages",
+        {
+            "Messages": {
+                "1": {"Message": "CAR 55 (SAI) TIME 1:23.576 DELETED - TRACK LIMITS AT TURN 4 LAP 3 16:02:17"},
+                "2": {"Message": "CAR 16 (LEC) TIME 1:18.878 DELETED - TRACK LIMITS AT TURN 3 LAP 3 16:04:20"},
+            }
+        },
+    )
+    assert {(d.driver_number, d.lap_number) for d in diff.deleted_laps} == {(55, 3), (16, 3)}

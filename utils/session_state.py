@@ -18,6 +18,7 @@ from documentation - F1 publishes none for this feed.
 from __future__ import annotations
 
 import logging
+import re
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -39,6 +40,22 @@ logger = logging.getLogger(__name__)
 # is plausible within a lap or two); "upcoming" is the earlier warning.
 BATTLE_GAP_THRESHOLD_SECONDS = 1.3
 UPCOMING_GAP_THRESHOLD_SECONDS = 2.0
+
+# Matches both observed RaceControlMessages deletion formats (confirmed against a real
+# live qualifying session):
+#   "CAR 55 (SAI) TIME 1:23.576 DELETED - TRACK LIMITS AT TURN 4 LAP 3 16:02:17"
+#   "CAR 10 (GAS) LAP DELETED - TRACK LIMITS AT TURN 1 LAP 4 16:08:19 (PIT)"
+# Both always carry a "LAP <n>" token identifying which lap was deleted - the reason text
+# in between varies (track limits, impeding, etc.) so it's matched non-greedily rather
+# than hardcoded. F1's own TimingData feed already recomputes BestLapTime/Position the
+# instant a lap is deleted (confirmed live), so this regex exists only to tag the matching
+# historical lap_data row is_deleted=true - not to recompute anything ourselves.
+_DELETED_LAP_RE = re.compile(r"CAR (\d+) \([A-Z]{2,4}\)\s+(?:TIME [\d:.]+ DELETED|LAP DELETED)\s+-\s+.*?\bLAP (\d+)\b")
+
+# How many drivers drop out at the end of each qualifying segment - fixed regardless of how
+# many remain (this season's 22-car grid: Q1 22->16, Q2 16->10, leaving 10 for Q3, matching
+# real F1 rules), so the same constant applies at both the Q1->Q2 and Q2->Q3 transitions.
+QUALIFYING_ELIMINATION_COUNT = 6
 # How many of a driver's most recent completed-lap gap samples are kept -
 # enough for the hover trend graph (5) while trend detection itself only
 # ever looks at the most recent 3.
@@ -169,6 +186,35 @@ class CompletedLap:
     # alongside the rest of this lap's data so the closing/widening trend survives a
     # backend restart, not just held in SessionState._gap_history's in-memory buffer.
     gap_to_ahead_seconds: Optional[float] = None
+    # Which qualifying segment this lap was set in ("Q1"/"Q2"/"Q3"), None for a
+    # non-qualifying session - see SessionState.qualifying_part. Persisted per-lap so
+    # historical analysis can tell a Q1 lap from a Q3 lap even though the live "current
+    # best" display resets between segments.
+    qualifying_part: Optional[str] = None
+
+
+@dataclass
+class QualifyingResultEntry:
+    """One driver's final standing for one qualifying segment - a durable snapshot taken
+    the moment that segment ends (see SessionState._snapshot_qualifying_results), so it's
+    retrievable directly from Postgres afterwards instead of replaying/recomputing from the
+    raw stream."""
+    driver_number: int
+    qualifying_part: str
+    position: Optional[int]
+    best_lap_seconds: Optional[float]
+    gap_to_leader_seconds: Optional[float]
+    eliminated: bool
+
+
+@dataclass
+class DeletedLap:
+    """One driver+lap identified by _DELETED_LAP_RE in a RaceControlMessages entry - see
+    StateDiff.deleted_laps. lap_number is F1's own cumulative NumberOfLaps count (laps are
+    numbered continuously across Q1/Q2/Q3, confirmed live - only best-lap-time state
+    resets per segment, not lap numbering), so it matches CompletedLap.lap_number directly."""
+    driver_number: int
+    lap_number: int
 
 
 def parse_lap_time_to_seconds(value: Optional[str]) -> Optional[float]:
@@ -212,6 +258,14 @@ class StateDiff:
     # the Warm tier immediately, not just on a lap boundary.
     new_weather_snapshot: Optional[Dict[str, Any]] = None
     new_race_control_entries: List[Dict[str, Any]] = field(default_factory=list)
+    deleted_laps: List["DeletedLap"] = field(default_factory=list)
+    # Populated only on the message that ends a qualifying segment (a QualifyingPart
+    # transition, or SessionStatus "Finalised" for the last segment) - see
+    # SessionState._snapshot_qualifying_results.
+    qualifying_part_results: List["QualifyingResultEntry"] = field(default_factory=list)
+    # Set uniformly by SessionState.apply(), not by individual handlers - when F1 actually
+    # sent this message (real event time, not "whenever it happened to be processed").
+    event_time: Optional[datetime] = None
     # Drivers whose Battle Radar status may have changed this apply() call (set or
     # cleared) - not the alerts themselves, since those live on SessionState.battle_radar
     # and diff_to_wire reads the current value for each touched driver from there.
@@ -245,6 +299,21 @@ class SessionState:
         self.session_status: Dict[str, Any] = {}
         self.lap_count: Dict[str, Any] = {}
         self.extrapolated_clock: Dict[str, Any] = {}
+        # "Q1"/"Q2"/"Q3" for a qualifying session, None otherwise (or before the first
+        # SessionData.Series entry carrying QualifyingPart arrives) - see _apply_session_data.
+        self.qualifying_part: Optional[str] = None
+        # Driver numbers knocked out at the end of a previous qualifying segment - see
+        # _apply_session_data. Permanent for the rest of the session once added (a driver
+        # eliminated in Q1 stays eliminated through Q2/Q3, they just stop receiving updates).
+        self.eliminated_drivers: Set[int] = set()
+        # driver_number -> gap to the session-best lap this qualifying part, in seconds
+        # (0.0 for the leader). Computed entirely from our own BestLapTime state, never
+        # from F1's own Stats[index].TimeDiffToFastest - see _recompute_qualifying_gaps
+        # for why that field is unreliable. A driver with no valid lap yet has no entry.
+        self.qualifying_gaps: Dict[int, float] = {}
+        # Guards against re-persisting the same final-segment snapshot on every repeated
+        # SessionStatus "Finalised" message - see _apply_session_status.
+        self._final_results_captured: bool = False
 
         # Append-only.
         self.race_control_messages: Dict[str, Any] = {}
@@ -277,21 +346,32 @@ class SessionState:
             "TrackStatus": lambda payload: self._apply_replace(payload, self.track_status, "TrackStatus"),
             "WeatherData": self._apply_weather_data,
             "SessionInfo": self._apply_session_info,
-            "SessionData": lambda payload: self._apply_replace(payload, self.session_data, "SessionData"),
-            "SessionStatus": lambda payload: self._apply_replace(payload, self.session_status, "SessionStatus"),
+            "SessionData": self._apply_session_data,
+            "SessionStatus": self._apply_session_status,
             "LapCount": lambda payload: self._apply_replace(payload, self.lap_count, "LapCount"),
             "ExtrapolatedClock": lambda payload: self._apply_replace(payload, self.extrapolated_clock, "ExtrapolatedClock"),
             "RaceControlMessages": self._apply_race_control,
             "TeamRadio": self._apply_team_radio,
         }
 
-    def apply(self, event_name: str, payload: Any) -> StateDiff:
-        """Merge one decoded SignalR message into state, returning what changed."""
+    def apply(self, event_name: str, payload: Any, event_time: Optional[datetime] = None) -> StateDiff:
+        """
+        Merge one decoded SignalR message into state, returning what changed.
+
+        `event_time` is when F1 actually sent this message (from the raw archive's own
+        capture timestamp during replay/tail, or "now" for a genuinely live message) - set
+        on every returned diff so a persist path that needs a real event timestamp (e.g.
+        weather_snapshots.ts) never has to fall back to "whenever this happened to be
+        processed", which is meaningless during a fast-forward replay/catch-up (every
+        historical message would get the same "now" timestamp instead of its real one).
+        """
         handler = self._handlers.get(event_name)
         if handler is None:
             logger.debug("No handler for event_name=%s, ignoring", event_name)
-            return StateDiff(event_name=event_name)
-        return handler(payload)
+            return StateDiff(event_name=event_name, event_time=event_time)
+        diff = handler(payload)
+        diff.event_time = event_time
+        return diff
 
     def set_driver_roster(self, drivers: Dict[int, Dict[str, Any]]) -> None:
         """Set once per session from an out-of-band OpenF1 fetch - see the comment on
@@ -340,6 +420,9 @@ class SessionState:
             "session_status": self.session_status,
             "lap_count": self.lap_count,
             "extrapolated_clock": self.extrapolated_clock,
+            "qualifying_part": self.qualifying_part,
+            "eliminated_drivers": sorted(self.eliminated_drivers),
+            "qualifying_gaps": dict(self.qualifying_gaps),
             "race_control_messages": self.race_control_messages,
             "driver_roster": self.driver_roster,
             "battle_radar": self.battle_radar,
@@ -352,10 +435,14 @@ class SessionState:
 
     def _apply_timing_data(self, payload: Dict[str, Any]) -> StateDiff:
         diff = StateDiff(event_name="TimingData")
+        recompute_gaps = False
         for driver_str, fields in payload.get("Lines", {}).items():
             driver_number = int(driver_str)
             deep_merge(self.drivers.setdefault(driver_number, {}), fields)
             diff.changed_driver_numbers.append(driver_number)
+
+            if "BestLapTime" in fields:
+                recompute_gaps = True
 
             if "NumberOfLaps" in fields:
                 completed, gap_touched = self._advance_lap(driver_number, fields["NumberOfLaps"])
@@ -363,7 +450,40 @@ class SessionState:
                     diff.completed_laps.append(completed)
                 if gap_touched:
                     diff.battle_radar_touched.append(driver_number)
+
+        if recompute_gaps:
+            self._recompute_qualifying_gaps()
+
         return diff
+
+    def _recompute_qualifying_gaps(self) -> None:
+        """
+        Recompute every driver's gap to the session-best lap (this qualifying part) from
+        our own BestLapTime state - deliberately never from F1's own
+        Stats[index].TimeDiffToFastest. Confirmed live that field is unreliable two ways:
+        its index isn't fixed (it shifts per qualifying part - "0" in Q1, "1" in Q2, "2" in
+        Q3 - mirroring BestLapTimes' indexing), and even at the right index F1 never
+        zeroes/clears it when a driver becomes the new leader, leaving whatever stale gap
+        they had from their previous position (a real bug this fixes: the P1 driver
+        showing a nonzero gap).
+
+        Recomputed for every driver whenever any one driver's BestLapTime changes, since a
+        new leader changes everyone's gap, not just theirs.
+        """
+        best_seconds: Dict[int, float] = {}
+        for driver_number, fields in self.drivers.items():
+            seconds = parse_lap_time_to_seconds(fields.get("BestLapTime", {}).get("Value"))
+            if seconds is not None:
+                best_seconds[driver_number] = seconds
+
+        if not best_seconds:
+            self.qualifying_gaps = {}
+            return
+
+        leader_seconds = min(best_seconds.values())
+        self.qualifying_gaps = {
+            driver_number: round(seconds - leader_seconds, 3) for driver_number, seconds in best_seconds.items()
+        }
 
     def _advance_lap(self, driver_number: int, new_lap_number: int) -> Tuple[Optional[CompletedLap], bool]:
         """
@@ -371,10 +491,14 @@ class SessionState:
         *previous* lap just completed. Flushes and resets that driver's
         telemetry buffer, and records a Battle Radar gap sample. Returns
         (None, False) if this isn't actually an advance (first sighting of the
-        driver, or a duplicate/out-of-order message); the bool return
-        indicates whether a gap sample was (attempted to be) recorded, which
-        can be true even when no CompletedLap is produced (e.g. the very
-        first lap, with no buffered telemetry yet).
+        driver, or a duplicate/out-of-order message).
+
+        A CompletedLap is produced on every real advance, even when no telemetry was
+        buffered for it (CarData.z not received - confirmed this can genuinely happen for
+        an entire live session, not just a brief gap) - lap number/duration/gap-to-ahead
+        are independent facts from telemetry and must still reach Postgres for historical
+        analysis; aggregates simply come back all-None and persist_completed_lap already
+        skips the lap_telemetry/lap_car_position writes when the buffer is empty.
         """
         previous_lap = self._current_lap_by_driver.get(driver_number)
         self._current_lap_by_driver[driver_number] = new_lap_number
@@ -392,10 +516,8 @@ class SessionState:
         last_lap_time = self.drivers.get(driver_number, {}).get("LastLapTime", {})
         lap_duration_seconds = parse_lap_time_to_seconds(last_lap_time.get("Value"))
 
-        buffer = self._telemetry_buffers.pop(driver_number, None)
+        buffer = self._telemetry_buffers.pop(driver_number, None) or TelemetrySampleBuffer()
         self._telemetry_buffers[driver_number] = TelemetrySampleBuffer()
-        if buffer is None or not buffer.speed:
-            return None, True
 
         return (
             CompletedLap(
@@ -405,6 +527,7 @@ class SessionState:
                 aggregates=buffer.compute_aggregates(DRS_ACTIVE_CODES),
                 telemetry=buffer,
                 gap_to_ahead_seconds=gap_to_ahead_seconds,
+                qualifying_part=self.qualifying_part,
             ),
             True,
         )
@@ -527,6 +650,97 @@ class SessionState:
         deep_merge(target, payload)
         return StateDiff(event_name=event_name)
 
+    def _apply_session_status(self, payload: Dict[str, Any]) -> StateDiff:
+        """
+        Same replace-style merge as every other session-wide topic, plus capturing the
+        last qualifying segment's final results: Status "Finalised" (confirmed live) is
+        the only signal for the *last* segment ending - Q1/Q2 get their snapshot from the
+        next segment's QualifyingPart transition (see _apply_session_data), but there's no
+        "Q4" transition to trigger Q3's, so this is the only place it happens.
+        """
+        deep_merge(self.session_status, payload)
+        diff = StateDiff(event_name="SessionStatus")
+        if (
+            payload.get("Status") == "Finalised"
+            and self.qualifying_part is not None
+            and not self._final_results_captured
+        ):
+            self._final_results_captured = True
+            diff.qualifying_part_results = self._snapshot_qualifying_results(self.qualifying_part)
+        return diff
+
+    def _apply_session_data(self, payload: Dict[str, Any]) -> StateDiff:
+        """
+        Same replace-style merge as every other session-wide topic, plus extracting the
+        current qualifying segment. Confirmed live against a real Q1->Q2 transition: F1
+        sends `{"Series": {"2": {"Utc": ..., "QualifyingPart": 2}}}` in this same topic at
+        the exact instant the new segment begins, simultaneously with every driver's
+        TimingData resetting (BestLapTime/LastLapTime/Sectors/Speeds all cleared to "" by
+        F1 itself) - so self.qualifying_part and self.drivers naturally end up consistent
+        without any extra reset logic here; deep_merge already reflects F1's own reset.
+
+        A transition to Q2/Q3 also means the previous segment just ended - captures the
+        bottom QUALIFYING_ELIMINATION_COUNT drivers *by their last known Position, before
+        this same payload's reset wipes it* as eliminated, since F1 sends the reset in the
+        same instant (no separate "eliminated" signal exists on this feed).
+        """
+        deep_merge(self.session_data, payload)
+        diff = StateDiff(event_name="SessionData")
+        series = payload.get("Series")
+        if isinstance(series, dict):
+            for entry in series.values():
+                part = entry.get("QualifyingPart") if isinstance(entry, dict) else None
+                if part is None:
+                    continue
+                new_part = f"Q{part}"
+                if new_part != self.qualifying_part:
+                    if part > 1:
+                        self._eliminate_bottom_drivers()
+                        # self.qualifying_part is still the *ending* part here (not yet
+                        # reassigned) - the snapshot must be tagged with that, not new_part.
+                        diff.qualifying_part_results = self._snapshot_qualifying_results(self.qualifying_part)
+                    self.qualifying_gaps = {}
+                self.qualifying_part = new_part
+        return diff
+
+    def _eliminate_bottom_drivers(self) -> None:
+        """Add the bottom QUALIFYING_ELIMINATION_COUNT still-active (not already eliminated,
+        Position known) drivers to self.eliminated_drivers, ranked by their current Position."""
+        ranked = sorted(
+            (
+                (int(fields["Position"]), driver_number)
+                for driver_number, fields in self.drivers.items()
+                if driver_number not in self.eliminated_drivers and str(fields.get("Position", "")).isdigit()
+            ),
+            reverse=True,
+        )
+        for _, driver_number in ranked[:QUALIFYING_ELIMINATION_COUNT]:
+            self.eliminated_drivers.add(driver_number)
+
+    def _snapshot_qualifying_results(self, part: Optional[str]) -> List[QualifyingResultEntry]:
+        """Every currently-known driver's final standing for `part` - see
+        QualifyingResultEntry. Called the instant that segment ends (a QualifyingPart
+        transition, or SessionStatus "Finalised" for the last segment - see
+        _apply_session_status), so Position/BestLapTime/qualifying_gaps still reflect that
+        segment's real result at the moment this runs."""
+        if part is None:
+            return []
+        results = []
+        for driver_number, fields in self.drivers.items():
+            position_str = fields.get("Position")
+            position = int(position_str) if str(position_str).isdigit() else None
+            results.append(
+                QualifyingResultEntry(
+                    driver_number=driver_number,
+                    qualifying_part=part,
+                    position=position,
+                    best_lap_seconds=parse_lap_time_to_seconds(fields.get("BestLapTime", {}).get("Value")),
+                    gap_to_leader_seconds=self.qualifying_gaps.get(driver_number),
+                    eliminated=driver_number in self.eliminated_drivers,
+                )
+            )
+        return results
+
     def _apply_session_info(self, payload: Dict[str, Any]) -> StateDiff:
         """
         Same replace-style merge as every other session-wide topic, plus
@@ -534,6 +748,13 @@ class SessionState:
         payload: `{"Meeting": {"Key": 1275, ...}, "Key": 9850, ...}`, where
         the top-level "Key" is the session key and "Meeting.Key" is the
         meeting key. Everything that persists to Postgres needs both.
+
+        Also defaults qualifying_part to "Q1" the moment Type is known to be "Qualifying" -
+        confirmed live that F1 never sends an explicit QualifyingPart:1 announcement (only
+        the Q1->Q2 and Q2->Q3 transitions get one; Q1 is just the session's starting state
+        with no signal of its own). Without this, qualifying_part stayed None for the
+        entirety of Q1 - showing "Q?" in the UI instead of "Q1", and silently dropping Q1's
+        results snapshot (_snapshot_qualifying_results(None) short-circuits to []).
         """
         deep_merge(self.session_info, payload)
         if "Key" in payload:
@@ -541,6 +762,8 @@ class SessionState:
         meeting = payload.get("Meeting")
         if isinstance(meeting, dict) and "Key" in meeting:
             self.meeting_key = meeting["Key"]
+        if self.session_info.get("Type") == "Qualifying" and self.qualifying_part is None:
+            self.qualifying_part = "Q1"
         return StateDiff(event_name="SessionInfo")
 
     def _apply_weather_data(self, payload: Dict[str, Any]) -> StateDiff:
@@ -568,7 +791,17 @@ class SessionState:
 
         deep_merge(self.race_control_messages, messages)
         new_entries = [{"index": index, **fields} for index, fields in messages.items()]
-        return StateDiff(event_name="RaceControlMessages", new_race_control_entries=new_entries)
+
+        deleted_laps: List[DeletedLap] = []
+        for fields in messages.values():
+            text = fields.get("Message") if isinstance(fields, dict) else None
+            if not text:
+                continue
+            match = _DELETED_LAP_RE.search(text)
+            if match:
+                deleted_laps.append(DeletedLap(driver_number=int(match.group(1)), lap_number=int(match.group(2))))
+
+        return StateDiff(event_name="RaceControlMessages", new_race_control_entries=new_entries, deleted_laps=deleted_laps)
 
     def _apply_team_radio(self, payload: Dict[str, Any]) -> StateDiff:
         diff = StateDiff(event_name="TeamRadio")

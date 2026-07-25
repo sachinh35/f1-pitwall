@@ -15,17 +15,17 @@ import logging
 from pathlib import Path
 from typing import Awaitable, Callable, Dict, Optional
 
-from utils import team_radio_db, whisper_transcriber
+from utils import radio_analysis, team_radio_db, whisper_transcriber
 from utils.http_client import download_binary
 from utils.session_state import RadioCapture
 
 logger = logging.getLogger(__name__)
 
-# Based on the convention used by FastF1 and other F1 live-timing tools for
-# this feed's static content host. NOT independently confirmed by a
-# successful fetch against this project - the saved F1TV token is expired,
-# so this has only been exercised against the failure path so far. A driver
-# hitting a fresh token should verify this resolves correctly.
+# Confirmed by a real successful fetch (200, valid MPEG audio) against a captured
+# historical session - see below, this host needs no authentication at all for
+# static content. The catch (also empirically confirmed - a bare `{base}/{path}`
+# URL 403s with a raw S3/CloudFront AccessDenied) is that the real URL must be
+# rooted under the session's own directory, not `/static/` directly.
 F1_STATIC_CONTENT_BASE_URL: str = "https://livetiming.formula1.com/static"
 
 AUDIO_CACHE_DIR: Path = Path("audio_cache")
@@ -36,8 +36,20 @@ AUDIO_CACHE_DIR: Path = Path("audio_cache")
 BroadcastCallback = Callable[[str, int], Awaitable[None]]
 
 
-def resolve_audio_url(relative_path: str) -> str:
-    """Resolve a TeamRadio message's relative `Path` into a fetchable URL."""
+def resolve_audio_url(relative_path: str, session_path: Optional[str] = None) -> str:
+    """
+    Resolve a TeamRadio message's relative `Path` (e.g. "TeamRadio/x.mp3") into a
+    fetchable URL. `session_path` is F1's own SessionInfo.Path field (e.g.
+    "2025/2025-11-30_Qatar_Grand_Prix/2025-11-30_Race/") - required in practice:
+    every static asset for a session lives under that session-specific directory,
+    not directly under /static/. A bare `{base}/{relative_path}` (no session_path)
+    404/403s - confirmed directly against F1's real CDN, not assumed - so
+    session_path is only optional here for callers that haven't seen SessionInfo
+    yet (the capture is archived either way; download will simply fail until a
+    later capture arrives with session_path available).
+    """
+    if session_path:
+        return f"{F1_STATIC_CONTENT_BASE_URL}/{session_path.strip('/')}/{relative_path}"
     return f"{F1_STATIC_CONTENT_BASE_URL}/{relative_path}"
 
 
@@ -62,8 +74,10 @@ async def process_radio_capture(
     session_key: int,
     capture: RadioCapture,
     auth_headers: Optional[Dict[str, str]] = None,
+    session_path: Optional[str] = None,
     on_downloaded: Optional[BroadcastCallback] = None,
     on_transcribed: Optional[BroadcastCallback] = None,
+    on_analyzed: Optional[BroadcastCallback] = None,
 ) -> None:
     """
     Run one radio clip through the full download -> transcribe pipeline.
@@ -84,7 +98,7 @@ async def process_radio_capture(
     local_path = local_audio_path(session_key, capture)
     try:
         await team_radio_db.mark_downloading(row_id)
-        url = resolve_audio_url(capture.path)
+        url = resolve_audio_url(capture.path, session_path=session_path)
         await download_binary(url, local_path, headers=auth_headers)
         await team_radio_db.mark_downloaded(row_id, web_relative_audio_path(session_key, capture))
         logger.info("Downloaded team radio clip id=%s path=%s", row_id, local_path)
@@ -105,3 +119,21 @@ async def process_radio_capture(
     except Exception as exc:
         logger.warning("Failed to transcribe team radio clip id=%s: %s", row_id, exc)
         await team_radio_db.mark_failed_transcription(row_id, str(exc))
+        return
+
+    # Best-effort: the transcript itself is already saved and marked done above regardless
+    # of what happens here, so a Gemini failure (quota, network, bad model id) never
+    # regresses an otherwise-successful transcription.
+    try:
+        analysis = await radio_analysis.analyze_transcript(
+            driver_label=f"Driver #{capture.driver_number}", lap_number=capture.lap_number, transcript=transcript
+        )
+        await team_radio_db.mark_analyzed(row_id, analysis.speaker_role, analysis.is_notable, analysis.notable_reason)
+        logger.info(
+            "Analyzed team radio clip id=%s speaker_role=%s is_notable=%s",
+            row_id, analysis.speaker_role, analysis.is_notable,
+        )
+        if on_analyzed is not None:
+            await on_analyzed("RADIO_ANALYSIS_READY", row_id)
+    except Exception as exc:
+        logger.warning("Failed to analyze team radio clip id=%s: %s", row_id, exc)

@@ -13,9 +13,10 @@ import asyncio
 import json
 import logging
 import threading
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Protocol
 
 import httpx
 from signalrcore.hub_connection_builder import HubConnectionBuilder
@@ -24,6 +25,25 @@ from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
 from utils.live_session_pipeline import LiveSessionPipeline, get_pipeline, register_pipeline, unregister_pipeline
 
 logger = logging.getLogger(__name__)
+
+# Reconnect backoff for run()'s outer supervisor loop - separate from (and outside)
+# signalrcore's own with_automatic_reconnect, which only retries a handful of times
+# before giving up. This loop never gives up: it keeps calling connect() again,
+# forever, until stop() is called - see run()'s docstring for why this matters.
+_RECONNECT_INITIAL_BACKOFF_SECONDS = 5.0
+_RECONNECT_MAX_BACKOFF_SECONDS = 60.0
+_RECONNECT_BACKOFF_MULTIPLIER = 2.0
+
+
+class StreamSink(Protocol):
+    """What F1SignalRStreamer needs from whatever consumes its messages - satisfied by both
+    LiveSessionPipeline (decode/broadcast/persist, the backend-owned live path) and
+    RawStreamArchiver (utils/raw_capture.py - archive-only, no DB/decode dependency, used by
+    the standalone capture script so it never depends on anything that could make it crash)."""
+
+    def log_event(self, event_type: str, data: Any) -> None: ...
+
+    async def handle_message(self, event_name: str, payload: Any, event_time: Optional[datetime] = None) -> None: ...
 
 # F1 SignalR Hub Configuration
 # The negotiation endpoint is: https://livetiming.formula1.com/signalrcore/negotiate
@@ -65,23 +85,37 @@ class F1SignalRStreamer:
         cookies: Optional[str] = None,
         loop: Optional[asyncio.AbstractEventLoop] = None,
         confirmed_roster: Optional[List[ConfirmedRosterEntry]] = None,
+        sink: Optional[StreamSink] = None,
+        stream_id: Optional[str] = None,
     ) -> None:
         self.access_token = access_token
         self.refresh_token = refresh_token
         self.cookies = cookies
         self.loop = loop
         self.connection: Optional[Any] = None
-        self.stream_id: str = str(int(datetime.now().timestamp()))
+        self.stream_id: str = stream_id or str(int(datetime.now().timestamp()))
         self.is_connected = False
         self.connected_event = threading.Event()
+        self._stop_event = threading.Event()
 
         self._setup_log_directory()
         self.log_file_path: Path = self._log_file_path()
 
-        self.pipeline = LiveSessionPipeline(
-            stream_id=self.stream_id, archive_path=self.log_file_path, confirmed_roster=confirmed_roster
-        )
-        register_pipeline(self.pipeline)
+        # sink is optional so the backend-owned live path (main.py's /start-live-stream)
+        # keeps its existing behavior unchanged - a full LiveSessionPipeline (decode,
+        # SSE broadcast, DB persistence). The standalone capture script passes a lean
+        # RawStreamArchiver instead, so it never depends on Postgres/decode logic - see
+        # utils/raw_capture.py and StreamSink above.
+        if sink is not None:
+            self.sink: StreamSink = sink
+            self.pipeline: Optional[LiveSessionPipeline] = sink if isinstance(sink, LiveSessionPipeline) else None
+        else:
+            pipeline = LiveSessionPipeline(
+                stream_id=self.stream_id, archive_path=self.log_file_path, confirmed_roster=confirmed_roster
+            )
+            register_pipeline(pipeline)
+            self.pipeline = pipeline
+            self.sink = pipeline
 
     def _setup_log_directory(self) -> None:
         """Create the stream logs directory if it doesn't exist."""
@@ -95,10 +129,12 @@ class F1SignalRStreamer:
         """Schedule the pipeline's write path for one incoming message onto the asyncio loop.
 
         SignalR's own callback runs on a different thread than the asyncio
-        loop, so this bridges into it via run_coroutine_threadsafe."""
+        loop, so this bridges into it via run_coroutine_threadsafe. event_time is "now" -
+        this message is genuinely live, not replayed, so receipt time is the real event time."""
         if not self.loop:
             return
-        asyncio.run_coroutine_threadsafe(self.pipeline.process_message(event_name, payload), self.loop)
+        event_time = datetime.now(timezone.utc)
+        asyncio.run_coroutine_threadsafe(self.sink.handle_message(event_name, payload, event_time), self.loop)
 
     def _build_headers(self) -> Dict[str, str]:
         """Build authentication headers for SignalR connection."""
@@ -196,7 +232,7 @@ class F1SignalRStreamer:
                     raise TimeoutError("Failed to connect to SignalR hub")
 
                 self.is_connected = True
-                self.pipeline.log_event("connection", {"status": "connected", "url": url})
+                self.sink.log_event("connection", {"status": "connected", "url": url})
                 logger.info(f"Successfully connected to F1 SignalR hub at {url}")
                 return
 
@@ -204,7 +240,7 @@ class F1SignalRStreamer:
                 last_error = e
                 error_msg = f"Failed to connect to {url}: {str(e)}"
                 logger.warning(error_msg)
-                self.pipeline.log_event(
+                self.sink.log_event(
                     "error",
                     {"error": error_msg, "type": "connection_error", "url": url, "exception_type": type(e).__name__},
                 )
@@ -213,7 +249,7 @@ class F1SignalRStreamer:
         self.is_connected = False
         final_error_msg = f"Failed to connect to F1 SignalR hub with all attempted URLs. Last error: {str(last_error)}"
         logger.error(final_error_msg, exc_info=True)
-        self.pipeline.log_event(
+        self.sink.log_event(
             "error",
             {
                 "error": final_error_msg,
@@ -232,13 +268,13 @@ class F1SignalRStreamer:
         def on_open(*args: Any) -> None:
             message = args[0] if args else None
             self.is_connected = True
-            self.pipeline.log_event("connection", {"status": "connected", "message": message})
+            self.sink.log_event("connection", {"status": "connected", "message": message})
             self.connected_event.set()
 
         def on_close(*args: Any) -> None:
             message = args[0] if args else None
             self.is_connected = False
-            self.pipeline.log_event("connection", {"status": "disconnected", "message": message})
+            self.sink.log_event("connection", {"status": "disconnected", "message": message})
             self.connected_event.clear()
 
         self.connection.on_open(on_open)
@@ -283,7 +319,7 @@ class F1SignalRStreamer:
                 try:
                     self.connection.send(method, [F1_TOPICS])
                     logger.info(f"Subscribed to {method} with topics")
-                    self.pipeline.log_event("subscription", {"method": method, "topics": F1_TOPICS})
+                    self.sink.log_event("subscription", {"method": method, "topics": F1_TOPICS})
                     break
                 except Exception as e:
                     logger.debug(f"Subscription method {method} failed: {e}")
@@ -291,44 +327,74 @@ class F1SignalRStreamer:
         except Exception as e:
             error_msg = f"Failed to subscribe to events: {str(e)}"
             logger.error(error_msg)
-            self.pipeline.log_event("error", {"error": error_msg, "type": "subscription_error"})
+            self.sink.log_event("error", {"error": error_msg, "type": "subscription_error"})
             logger.warning("Continuing without explicit subscription - events may still be received")
 
+    def stop(self) -> None:
+        """Signal run()'s reconnect loop to stop retrying and shut down for good - the only
+        way to permanently end a stream (a transient disconnect alone does not stop it; see run())."""
+        self._stop_event.set()
+
     def disconnect(self) -> None:
-        """Disconnect from SignalR hub and close the pipeline's archive file."""
+        """Permanently stop this stream: signal the reconnect loop to give up (stop()) and
+        tear down the live connection/archive immediately, without waiting for the run()
+        thread to notice on its own."""
+        self._stop_event.set()
         try:
             if self.connection and self.is_connected:
                 self.connection.stop()
                 self.is_connected = False
                 self.connected_event.clear()
-                self.pipeline.log_event("connection", {"status": "disconnected", "reason": "manual"})
+                self.sink.log_event("connection", {"status": "disconnected", "reason": "manual"})
                 logger.info("Disconnected from F1 SignalR hub")
         except Exception as e:
             logger.error(f"Error disconnecting: {e}")
         finally:
             unregister_pipeline(self.stream_id)
+            close = getattr(self.sink, "close", None)
+            if callable(close):
+                close()
 
     def run(self) -> None:
-        """Connect, subscribe, and keep alive. Runs in a background thread."""
+        """
+        Connect, subscribe, and keep the connection alive - self-healing on any disconnect
+        or error, forever, until stop()/disconnect() is called. Runs in a background thread.
+
+        signalrcore's own with_automatic_reconnect (see connect()) only retries a handful of
+        times before giving up; this outer loop is what makes capture actually resilient -
+        it keeps calling connect() again indefinitely, with capped exponential backoff
+        between attempts, so a prolonged F1 SignalR outage delays capture but never
+        permanently stops it short of the process being killed.
+        """
+        backoff = _RECONNECT_INITIAL_BACKOFF_SECONDS
         try:
-            self.connect()
-            self.subscribe_to_events()
+            while not self._stop_event.is_set():
+                try:
+                    self.connect()
+                    self.subscribe_to_events()
+                    backoff = _RECONNECT_INITIAL_BACKOFF_SECONDS
 
-            logger.info("Stream is running. Waiting for events...")
-            self.pipeline.log_event("stream", {"status": "running"})
+                    logger.info("Stream is running. Waiting for events...")
+                    self.sink.log_event("stream", {"status": "running"})
 
-            import time
-            while self.is_connected:
-                time.sleep(1)
+                    while self.is_connected and not self._stop_event.is_set():
+                        time.sleep(1)
 
+                except Exception as e:
+                    error_msg = f"Stream error: {str(e)}"
+                    logger.error(error_msg)
+                    self.sink.log_event("error", {"error": error_msg, "type": "stream_error"})
+
+                if self._stop_event.is_set():
+                    break
+
+                logger.warning("Stream disconnected - reconnecting in %.0fs", backoff)
+                self.sink.log_event("stream", {"status": "reconnecting", "backoff_seconds": backoff})
+                self._stop_event.wait(backoff)
+                backoff = min(backoff * _RECONNECT_BACKOFF_MULTIPLIER, _RECONNECT_MAX_BACKOFF_SECONDS)
         except KeyboardInterrupt:
             logger.info("Stream interrupted by user")
-            self.pipeline.log_event("stream", {"status": "interrupted", "reason": "user"})
-        except Exception as e:
-            error_msg = f"Stream error: {str(e)}"
-            logger.error(error_msg)
-            self.pipeline.log_event("error", {"error": error_msg, "type": "stream_error"})
-            raise
+            self.sink.log_event("stream", {"status": "interrupted", "reason": "user"})
         finally:
             self.disconnect()
 
@@ -350,17 +416,32 @@ def start_stream(
     refresh_token: Optional[str] = None,
     cookies: Optional[str] = None,
     confirmed_roster: Optional[List[ConfirmedRosterEntry]] = None,
+    sink: Optional[StreamSink] = None,
+    stream_id: Optional[str] = None,
+    daemon: bool = True,
 ) -> F1SignalRStreamer:
-    """Start a new live F1 SignalR stream in a background thread."""
+    """
+    Start a new live F1 SignalR stream in a background thread.
+
+    `sink`/`stream_id`/`daemon` exist for scripts/capture_stream.py, the standalone raw
+    capture process (see utils/raw_capture.py's RawStreamArchiver) - it passes a lean
+    archiver sink, a stable stream_id (so restarts keep the same identity/filename), and
+    daemon=False (a daemon thread dies the instant its process's main thread exits, which
+    is fine for a request handler inside the FastAPI process but wrong for a script whose
+    entire purpose is to keep running).
+    """
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
 
-    streamer = F1SignalRStreamer(access_token, refresh_token, cookies, loop=loop, confirmed_roster=confirmed_roster)
+    streamer = F1SignalRStreamer(
+        access_token, refresh_token, cookies, loop=loop, confirmed_roster=confirmed_roster,
+        sink=sink, stream_id=stream_id,
+    )
     _active_streams[streamer.stream_id] = streamer
 
-    thread = threading.Thread(target=streamer.run, daemon=True)
+    thread = threading.Thread(target=streamer.run, daemon=daemon)
     thread.start()
 
     return streamer

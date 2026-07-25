@@ -23,10 +23,13 @@ from typing import Any, Coroutine, Dict, List, Optional, Set, Tuple
 
 from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
 from openf1_pydantic_models.f1_drivers import DriverInfo
+from utils import f1_auth
 from utils.live_persistence import (
+    mark_lap_deleted,
     persist_completed_lap,
     persist_confirmed_driver_roster,
     persist_driver_roster,
+    persist_qualifying_results,
     persist_race_control_entry,
     persist_session_metadata,
     persist_total_laps,
@@ -60,6 +63,24 @@ _SESSION_WIDE_WIRE_KEYS: Dict[str, str] = {
     "ExtrapolatedClock": "extrapolated_clock",
     "RaceControlMessages": "race_control_messages",
 }
+
+
+def _radio_auth_headers() -> Optional[Dict[str, str]]:
+    """
+    Bearer-auth header for team-radio audio downloads, built from whatever F1TV
+    subscription token is currently saved (see utils/f1_auth.py). None if no valid
+    token is saved - the download is then attempted unauthenticated, exactly as it
+    always has been, so this is purely additive.
+
+    Unconfirmed by a real successful download as of this writing (see
+    utils/team_radio_pipeline.py's F1_STATIC_CONTENT_BASE_URL comment) - Bearer is
+    the standard convention for this kind of token, but F1's static content host
+    might expect something else entirely (a cookie, no auth at all, ...).
+    """
+    token = f1_auth.get_saved_token()
+    if not token or not f1_auth.validate_subscription_token(token):
+        return None
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _completed_lap_to_wire(lap: CompletedLap) -> Dict[str, Any]:
@@ -129,6 +150,24 @@ def diff_to_wire(diff: StateDiff, state: SessionState) -> Dict[str, Any]:
     session_wide_key = _SESSION_WIDE_WIRE_KEYS.get(diff.event_name)
     if session_wide_key is not None:
         wire[session_wide_key] = getattr(state, session_wide_key)
+
+    if diff.event_name in ("SessionData", "SessionInfo"):
+        # Derived state, not a straight mirror of either raw topic - see
+        # SessionState._apply_session_data/_apply_session_info. Also sent on SessionInfo
+        # because qualifying_part can default to "Q1" there (F1 never announces Q1
+        # explicitly - see _apply_session_info), which a client connected since before
+        # that point would otherwise not learn about until an unrelated SessionData ping
+        # happened to fire. Sent as their own top-level keys so the frontend doesn't need
+        # to reach into session_data.Series itself to find them.
+        wire["qualifying_part"] = state.qualifying_part
+        wire["eliminated_drivers"] = sorted(state.eliminated_drivers)
+
+    if diff.event_name == "TimingData":
+        # Full table, not just this diff's changed_driver_numbers - one driver setting a
+        # new session-best changes every other driver's gap too, not just their own. See
+        # SessionState._recompute_qualifying_gaps for why this is never read from F1's own
+        # Stats field.
+        wire["qualifying_gaps"] = {str(d): v for d, v in state.qualifying_gaps.items()}
 
     if diff.event_name == "CarData.z":
         wire["telemetry"] = {
@@ -256,18 +295,29 @@ class LiveSessionPipeline:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
-    async def process_message(self, event_name: str, payload: Any) -> None:
+    async def handle_message(self, event_name: str, payload: Any, event_time: Optional[datetime] = None) -> None:
+        """Alias satisfying utils.live_stream.StreamSink - see process_message, the actual implementation."""
+        await self.process_message(event_name, payload, event_time=event_time)
+
+    async def process_message(self, event_name: str, payload: Any, event_time: Optional[datetime] = None) -> None:
         """
         The write path for one incoming message (live or replayed): archive
         first, decode+merge, broadcast immediately, then detached background
         work for anything that just settled. A failure decoding/merging one
         message is logged and skipped - it must never take down the pipeline
         processing everything else.
+
+        `event_time` is when F1 actually sent this message (real event time from the raw
+        archive during replay/tail, None for a genuinely live message - see
+        SessionState.apply()) - threaded through so a persist path needing a true
+        timestamp (weather_snapshots.ts) never falls back to "whenever this happened to be
+        processed", which during a fast-forward replay is meaningless (every historical
+        message would get the same "now").
         """
         self._archive_raw(event_name, payload)
 
         try:
-            diff = self.state.apply(event_name, payload)
+            diff = self.state.apply(event_name, payload, event_time=event_time)
         except Exception:
             logger.exception("Failed to apply event_name=%s to session state, skipping", event_name)
             return
@@ -287,16 +337,28 @@ class LiveSessionPipeline:
                     process_radio_capture(
                         session_key=self.state.session_key,
                         capture=capture,
+                        auth_headers=_radio_auth_headers(),
+                        session_path=self.state.session_info.get("Path"),
                         on_downloaded=self._broadcast_radio_event,
                         on_transcribed=self._broadcast_radio_event,
+                        on_analyzed=self._broadcast_radio_event,
                     )
                 )
 
         if diff.new_weather_snapshot is not None and self.state.session_key is not None:
-            self._spawn(self._persist_weather(diff.new_weather_snapshot))
+            self._spawn(self._persist_weather(diff.new_weather_snapshot, diff.event_time))
 
         for entry in diff.new_race_control_entries:
             self._spawn(self._persist_race_control_entry(entry))
+
+        for deleted in diff.deleted_laps:
+            if self.state.session_key is not None:
+                self._spawn(mark_lap_deleted(self.state.session_key, deleted.driver_number, deleted.lap_number))
+
+        if diff.qualifying_part_results and self.state.session_key is not None:
+            self._spawn(
+                persist_qualifying_results(self.state.session_key, self.state.meeting_key, diff.qualifying_part_results)
+            )
 
     async def _persist_completed_lap(self, lap: CompletedLap) -> None:
         if self.state.session_key is None or self.state.meeting_key is None:
@@ -404,9 +466,9 @@ class LiveSessionPipeline:
         that its transcript is ready (RADIO_TRANSCRIPT_READY) - without polling."""
         await self._broadcast(event_name, {"row_id": row_id})
 
-    async def _persist_weather(self, weather: Dict[str, Any]) -> None:
+    async def _persist_weather(self, weather: Dict[str, Any], event_time: Optional[datetime]) -> None:
         try:
-            await persist_weather_snapshot(self.state.session_key, weather)
+            await persist_weather_snapshot(self.state.session_key, weather, ts=event_time)
         except Exception:
             logger.exception("Failed to persist weather snapshot for session_key=%s", self.state.session_key)
 

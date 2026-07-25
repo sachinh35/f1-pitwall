@@ -15,6 +15,7 @@ from typing import Any, List, Optional
 from pydantic import BaseModel
 
 from utils.database import DatabaseManager
+from utils.time_utils import normalize_datetime
 
 
 class RadioClipStatus(str, Enum):
@@ -29,7 +30,8 @@ class RadioClipStatus(str, Enum):
 
 
 class TeamRadioDB(BaseModel):
-    """Mirrors the `team_radio` table (migrations/0004_weather_radio.sql)."""
+    """Mirrors the `team_radio` table (migrations/0004_weather_radio.sql,
+    extended by 0009_team_radio_analysis.sql)."""
     id: Optional[int] = None
     session_key: int
     driver_number: int
@@ -40,6 +42,12 @@ class TeamRadioDB(BaseModel):
     status: RadioClipStatus = RadioClipStatus.PENDING
     error: Optional[str] = None
     transcribed_at: Optional[datetime] = None
+    # Gemini-classified, set once analysis completes (see utils/radio_analysis.py) - all
+    # None until then, and speaker_role in particular is an LLM inference, not ground
+    # truth, since F1's raw feed carries no speaker/diarization info at all.
+    speaker_role: Optional[str] = None
+    is_notable: Optional[bool] = None
+    notable_reason: Optional[str] = None
 
 
 async def insert_pending(
@@ -48,7 +56,14 @@ async def insert_pending(
     lap_number: Optional[int],
     ts: datetime,
 ) -> int:
-    """Insert a new team_radio row in `pending` state, returning its id."""
+    """Insert a new team_radio row in `pending` state, returning its id.
+
+    `ts` comes from F1's raw TeamRadio.Captures[].Utc, parsed tz-aware (see
+    session_state._parse_utc); `team_radio.ts` is a plain TIMESTAMP column, so this
+    must be normalized first - previously wasn't, which meant every single capture
+    crashed here (asyncpg.exceptions.DataError) before a row was ever inserted,
+    confirmed against a real replay run.
+    """
     async with DatabaseManager.get_connection() as conn:
         return await conn.fetchval(
             """
@@ -56,7 +71,7 @@ async def insert_pending(
             VALUES ($1, $2, $3, $4, $5)
             RETURNING id
             """,
-            session_key, driver_number, lap_number, ts, RadioClipStatus.PENDING.value,
+            session_key, driver_number, lap_number, normalize_datetime(ts), RadioClipStatus.PENDING.value,
         )
 
 
@@ -104,13 +119,21 @@ async def mark_failed_transcription(row_id: int, error: str) -> None:
     await _update(row_id, status=RadioClipStatus.FAILED_TRANSCRIPTION.value, error=error)
 
 
+async def mark_analyzed(row_id: int, speaker_role: str, is_notable: bool, notable_reason: Optional[str]) -> None:
+    """Record the Gemini classification for an already-transcribed clip. Deliberately does not
+    touch `status` - a failed/skipped analysis must never regress an otherwise-successful
+    transcription back to a non-done state (see utils/team_radio_pipeline.py)."""
+    await _update(row_id, speaker_role=speaker_role, is_notable=is_notable, notable_reason=notable_reason)
+
+
 async def get_for_session(session_key: int) -> List[TeamRadioDB]:
     """All radio clips for a session, oldest first - used both for a live session's initial load and for
     browsing a finished session's radio history (same table, same query path, live or historical)."""
     async with DatabaseManager.get_connection() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, session_key, driver_number, lap_number, ts, audio_path, transcript, status, error, transcribed_at
+            SELECT id, session_key, driver_number, lap_number, ts, audio_path, transcript, status, error,
+                   transcribed_at, speaker_role, is_notable, notable_reason
             FROM team_radio
             WHERE session_key = $1
             ORDER BY ts
@@ -129,6 +152,9 @@ async def get_for_session(session_key: int) -> List[TeamRadioDB]:
                 status=RadioClipStatus(row["status"]),
                 error=row["error"],
                 transcribed_at=row["transcribed_at"],
+                speaker_role=row["speaker_role"],
+                is_notable=row["is_notable"],
+                notable_reason=row["notable_reason"],
             )
             for row in rows
         ]

@@ -1,0 +1,116 @@
+"""
+Unit tests for utils/f1_auth.py's browser-based auth flow (ported from FastF1's
+fastf1/internals/f1auth.py - see ATTRIBUTION.md). Real JWKS/network verification is
+always mocked (validate_subscription_token) - these tests never call F1's real API,
+and the real ~/.local/share/f1-dashboard/f1auth.json is never touched (AUTH_DATA_FILE
+is monkeypatched to a tmp_path).
+"""
+import json
+import re
+import urllib.parse
+
+import httpx
+import pytest
+
+from utils import f1_auth
+
+
+@pytest.fixture(autouse=True)
+def _isolate_browser_auth_state(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """Every test starts with a clean slate: no in-flight flow, and AUTH_DATA_FILE
+    pointed at a throwaway path so a test can never read or clobber a developer's
+    real saved F1TV token."""
+    monkeypatch.setattr(f1_auth, "_browser_auth_state", None)
+    monkeypatch.setattr(f1_auth, "AUTH_DATA_FILE", tmp_path / "f1auth.json")
+    yield
+    # Clean up any server a test left running (e.g. on assertion failure mid-test).
+    if f1_auth._browser_auth_state is not None:
+        f1_auth._browser_auth_state["httpd"].shutdown()
+        f1_auth._browser_auth_state["httpd"].server_close()
+        f1_auth._browser_auth_state = None
+
+
+def _login_session_body(subscription_token: str) -> bytes:
+    """Builds the exact payload shape f1login.fastf1.dev POSTs: {"loginSession": "<url-encoded JSON>"}."""
+    inner = urllib.parse.quote(json.dumps({"data": {"subscriptionToken": subscription_token}}))
+    return json.dumps({"loginSession": inner}).encode("utf-8")
+
+
+# ---- _parse_login_session_payload ----
+
+def test_parse_login_session_payload_extracts_token() -> None:
+    body = _login_session_body("real.jwt.token")
+    assert f1_auth._parse_login_session_payload(body) == "real.jwt.token"
+
+
+def test_parse_login_session_payload_returns_none_for_malformed_json() -> None:
+    assert f1_auth._parse_login_session_payload(b"not json at all") is None
+
+
+def test_parse_login_session_payload_returns_none_when_login_session_key_missing() -> None:
+    assert f1_auth._parse_login_session_payload(json.dumps({"other": "field"}).encode()) is None
+
+
+def test_parse_login_session_payload_returns_none_when_subscription_token_missing() -> None:
+    inner = urllib.parse.quote(json.dumps({"data": {}}))
+    body = json.dumps({"loginSession": inner}).encode()
+    assert f1_auth._parse_login_session_payload(body) is None
+
+
+# ---- start_browser_auth_flow / check_browser_auth_status ----
+
+def test_check_status_before_any_flow_started() -> None:
+    assert f1_auth.check_browser_auth_status() == {"status": "not_started"}
+
+
+def test_start_browser_auth_flow_returns_relay_url_with_port() -> None:
+    auth_url = f1_auth.start_browser_auth_flow()
+    assert re.match(r"^https://f1login\.fastf1\.dev\?port=\d+$", auth_url)
+
+
+def test_status_is_pending_before_the_callback_lands() -> None:
+    auth_url = f1_auth.start_browser_auth_flow()
+    status = f1_auth.check_browser_auth_status()
+    assert status == {"status": "pending", "auth_url": auth_url}
+
+
+def test_full_flow_real_local_http_callback_marks_authenticated_and_saves_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercises the actual local HTTPServer over a real socket - not mocked - since that's
+    the part worth genuinely proving works (parsing/threading is covered elsewhere)."""
+    monkeypatch.setattr(f1_auth, "validate_subscription_token", lambda token: True)
+
+    auth_url = f1_auth.start_browser_auth_flow()
+    port = int(auth_url.rsplit("=", 1)[1])
+
+    response = httpx.post(
+        f"http://127.0.0.1:{port}/auth",
+        content=_login_session_body("captured.subscription.token"),
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 200
+
+    status = f1_auth.check_browser_auth_status()
+    assert status == {"status": "authenticated"}
+    assert f1_auth.AUTH_DATA_FILE.read_text() == "captured.subscription.token"
+    # The server must be shut down and cleared once terminal, not left holding the port open.
+    assert f1_auth._browser_auth_state is None
+
+
+def test_full_flow_invalid_token_marks_failed_and_does_not_save(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(f1_auth, "validate_subscription_token", lambda token: False)
+
+    auth_url = f1_auth.start_browser_auth_flow()
+    port = int(auth_url.rsplit("=", 1)[1])
+
+    httpx.post(
+        f"http://127.0.0.1:{port}/auth",
+        content=_login_session_body("bad.token"),
+        headers={"Content-Type": "application/json"},
+    )
+
+    status = f1_auth.check_browser_auth_status()
+    assert status["status"] == "failed"
+    assert "error" in status
+    assert not f1_auth.AUTH_DATA_FILE.exists()

@@ -17,6 +17,7 @@ from typing import Any, Iterator, List, Optional, Tuple
 
 from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
 from utils.live_session_pipeline import LiveSessionPipeline, register_pipeline, unregister_pipeline
+from utils.time_utils import parse_iso_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -47,15 +48,6 @@ def iter_log_messages(log_path: Path) -> Iterator[Tuple[str, str, Any]]:
             yield entry.get("timestamp", ""), event_name, payload
 
 
-def _parse_timestamp(value: str) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return None
-
-
 async def replay_log_file(
     log_path: Path,
     pipeline: LiveSessionPipeline,
@@ -77,7 +69,7 @@ async def replay_log_file(
     message_count = 0
 
     for timestamp_str, event_name, payload in iter_log_messages(log_path):
-        current_ts = _parse_timestamp(timestamp_str)
+        current_ts = parse_iso_timestamp(timestamp_str)
         if previous_ts is not None and current_ts is not None:
             gap_seconds = min((current_ts - previous_ts).total_seconds(), max_gap_seconds)
             if gap_seconds > 0:
@@ -85,7 +77,7 @@ async def replay_log_file(
         if current_ts is not None:
             previous_ts = current_ts
 
-        await pipeline.process_message(event_name, payload)
+        await pipeline.process_message(event_name, payload, event_time=current_ts)
         message_count += 1
 
     logger.info("Replay finished: %s (%d messages, speed_factor=%.1f)", log_path, message_count, speed_factor)

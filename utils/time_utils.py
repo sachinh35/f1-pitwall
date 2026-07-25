@@ -16,3 +16,18 @@ def normalize_datetime(dt: Optional[datetime]) -> Optional[datetime]:
     if dt.tzinfo is not None:
         return dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt
+
+
+def parse_iso_timestamp(value: Optional[str]) -> Optional[datetime]:
+    """
+    Parse an ISO 8601 timestamp string (as written by RawStreamArchiver/LiveSessionPipeline's
+    raw-archive "timestamp" field - naive, local system time from `datetime.now().isoformat()`)
+    back into a datetime. Returns None for missing/malformed input rather than raising, since a
+    single bad line in a captured log must never take down a replay/tail.
+    """
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None

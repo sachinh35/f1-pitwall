@@ -18,6 +18,9 @@ dependencies = [
     "sse-starlette",
     "pywhispercpp",
     "numpy",
+    "python-dotenv>=1.2.2",
+    "strands-agents[gemini]>=1.50.1",
+    "strands-agents-tools>=0.8.5",
 ]
 
 [dependency-groups]

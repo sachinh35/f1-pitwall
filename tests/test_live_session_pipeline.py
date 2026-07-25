@@ -74,6 +74,8 @@ def _mock_persistence(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(pipeline_module, "persist_completed_lap", AsyncMock())
     monkeypatch.setattr(pipeline_module, "persist_weather_snapshot", AsyncMock())
     monkeypatch.setattr(pipeline_module, "persist_race_control_entry", AsyncMock())
+    monkeypatch.setattr(pipeline_module, "mark_lap_deleted", AsyncMock())
+    monkeypatch.setattr(pipeline_module, "persist_qualifying_results", AsyncMock())
     monkeypatch.setattr(pipeline_module, "process_radio_capture", AsyncMock())
     monkeypatch.setattr(pipeline_module, "persist_session_metadata", AsyncMock())
     monkeypatch.setattr(pipeline_module, "persist_driver_roster", AsyncMock())
@@ -81,6 +83,10 @@ def _mock_persistence(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(pipeline_module, "fetch_session_metadata", AsyncMock(return_value=None))
     monkeypatch.setattr(pipeline_module, "fetch_driver_roster", AsyncMock(return_value=[]))
     monkeypatch.setattr(pipeline_module, "fetch_total_laps", AsyncMock(return_value=None))
+    # No token saved by default - keeps tests deterministic regardless of the machine's real
+    # local F1TV auth state (see utils/f1_auth.py). Tests that care about the auth-headers
+    # path override this explicitly.
+    monkeypatch.setattr(pipeline_module.f1_auth, "get_saved_token", lambda: None)
     monkeypatch.setattr(pipeline_module, "persist_total_laps", AsyncMock())
 
 
@@ -177,6 +183,22 @@ async def test_completed_lap_persist_skipped_when_session_key_unknown() -> None:
 
 
 @pytest.mark.asyncio
+async def test_radio_capture_includes_session_path_from_session_info(monkeypatch: pytest.MonkeyPatch) -> None:
+    pipeline = LiveSessionPipeline(stream_id="test-radio-session-path")
+    await pipeline.process_message(
+        "SessionInfo", {"Key": 9850, "Path": "2025/2025-11-30_Qatar_Grand_Prix/2025-11-30_Race/"}
+    )
+    await pipeline.process_message(
+        "TeamRadio", {"Captures": [{"Utc": "2025-01-01T00:00:00Z", "RacingNumber": "1", "Path": "TeamRadio/x.mp3"}]}
+    )
+    await _drain_background_tasks(pipeline)
+
+    assert pipeline_module.process_radio_capture.call_args.kwargs["session_path"] == (
+        "2025/2025-11-30_Qatar_Grand_Prix/2025-11-30_Race/"
+    )
+
+
+@pytest.mark.asyncio
 async def test_new_radio_capture_triggers_detached_download_pipeline() -> None:
     pipeline = LiveSessionPipeline(stream_id="test-8")
     await pipeline.process_message("SessionInfo", {"Key": 9850})
@@ -187,6 +209,44 @@ async def test_new_radio_capture_triggers_detached_download_pipeline() -> None:
     await _drain_background_tasks(pipeline)
     pipeline_module.process_radio_capture.assert_awaited_once()
     assert pipeline_module.process_radio_capture.call_args.kwargs["session_key"] == 9850
+    # No F1TV token saved (autouse fixture default) - downloads still get attempted, unauthenticated.
+    assert pipeline_module.process_radio_capture.call_args.kwargs["auth_headers"] is None
+
+
+@pytest.mark.asyncio
+async def test_radio_capture_includes_bearer_auth_header_when_a_valid_token_is_saved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pipeline_module.f1_auth, "get_saved_token", lambda: "fake.jwt.token")
+    monkeypatch.setattr(pipeline_module.f1_auth, "validate_subscription_token", lambda token: True)
+
+    pipeline = LiveSessionPipeline(stream_id="test-radio-auth-1")
+    await pipeline.process_message("SessionInfo", {"Key": 9850})
+    await pipeline.process_message(
+        "TeamRadio", {"Captures": [{"Utc": "2025-01-01T00:00:00Z", "RacingNumber": "1", "Path": "TeamRadio/x.mp3"}]}
+    )
+    await _drain_background_tasks(pipeline)
+
+    assert pipeline_module.process_radio_capture.call_args.kwargs["auth_headers"] == {
+        "Authorization": "Bearer fake.jwt.token"
+    }
+
+
+@pytest.mark.asyncio
+async def test_radio_capture_omits_auth_header_when_saved_token_fails_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pipeline_module.f1_auth, "get_saved_token", lambda: "expired.jwt.token")
+    monkeypatch.setattr(pipeline_module.f1_auth, "validate_subscription_token", lambda token: False)
+
+    pipeline = LiveSessionPipeline(stream_id="test-radio-auth-2")
+    await pipeline.process_message("SessionInfo", {"Key": 9850})
+    await pipeline.process_message(
+        "TeamRadio", {"Captures": [{"Utc": "2025-01-01T00:00:00Z", "RacingNumber": "1", "Path": "TeamRadio/x.mp3"}]}
+    )
+    await _drain_background_tasks(pipeline)
+
+    assert pipeline_module.process_radio_capture.call_args.kwargs["auth_headers"] is None
 
 
 @pytest.mark.asyncio
@@ -200,6 +260,78 @@ async def test_weather_and_race_control_persist_immediately_not_on_lap_boundary(
     await _drain_background_tasks(pipeline)
     pipeline_module.persist_weather_snapshot.assert_awaited_once()
     pipeline_module.persist_race_control_entry.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_weather_persist_receives_the_real_event_time_not_processing_time() -> None:
+    """Real bug this guards against: weather_snapshots.ts must reflect when F1 actually
+    sent the message (from the raw archive during replay/tail), not whenever this happened
+    to be processed - otherwise every replayed/caught-up historical tick gets stamped with
+    the moment of replay instead of its real time."""
+    pipeline = LiveSessionPipeline(stream_id="test-9f")
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+
+    event_time = datetime(2026, 7, 25, 16, 31, 47)
+    await pipeline.process_message("WeatherData", {"AirTemp": "22.0"}, event_time=event_time)
+    await _drain_background_tasks(pipeline)
+
+    pipeline_module.persist_weather_snapshot.assert_awaited_once_with(9850, {"AirTemp": "22.0"}, ts=event_time)
+
+
+@pytest.mark.asyncio
+async def test_race_control_deletion_marks_lap_deleted_once_session_key_known() -> None:
+    pipeline = LiveSessionPipeline(stream_id="test-9b")
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+
+    await pipeline.process_message(
+        "RaceControlMessages",
+        {"Messages": {"1": {"Message": "CAR 55 (SAI) TIME 1:23.576 DELETED - TRACK LIMITS AT TURN 4 LAP 3 16:02:17"}}},
+    )
+    await _drain_background_tasks(pipeline)
+
+    pipeline_module.mark_lap_deleted.assert_awaited_once_with(9850, 55, 3)
+
+
+@pytest.mark.asyncio
+async def test_race_control_deletion_dropped_when_session_key_not_yet_known() -> None:
+    pipeline = LiveSessionPipeline(stream_id="test-9c")
+
+    await pipeline.process_message(
+        "RaceControlMessages",
+        {"Messages": {"1": {"Message": "CAR 55 (SAI) TIME 1:23.576 DELETED - TRACK LIMITS AT TURN 4 LAP 3 16:02:17"}}},
+    )
+    await _drain_background_tasks(pipeline)
+
+    pipeline_module.mark_lap_deleted.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_qualifying_part_transition_persists_results_once_session_key_known() -> None:
+    pipeline = LiveSessionPipeline(stream_id="test-9d")
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+    await pipeline.process_message("TimingData", {"Lines": {"1": {"Position": "1"}}})
+    await pipeline.process_message("SessionData", {"Series": {"1": {"QualifyingPart": 1}}})
+
+    await pipeline.process_message("SessionData", {"Series": {"2": {"QualifyingPart": 2}}})
+    await _drain_background_tasks(pipeline)
+
+    pipeline_module.persist_qualifying_results.assert_awaited_once()
+    args = pipeline_module.persist_qualifying_results.call_args.args
+    assert args[0] == 9850
+    assert args[1] == 1275
+    assert args[2][0].qualifying_part == "Q1"
+
+
+@pytest.mark.asyncio
+async def test_qualifying_part_transition_does_not_persist_when_session_key_not_yet_known() -> None:
+    pipeline = LiveSessionPipeline(stream_id="test-9e")
+    await pipeline.process_message("TimingData", {"Lines": {"1": {"Position": "1"}}})
+    await pipeline.process_message("SessionData", {"Series": {"1": {"QualifyingPart": 1}}})
+
+    await pipeline.process_message("SessionData", {"Series": {"2": {"QualifyingPart": 2}}})
+    await _drain_background_tasks(pipeline)
+
+    pipeline_module.persist_qualifying_results.assert_not_awaited()
 
 
 # ---- SessionInfo-triggered driver roster / session metadata fetch ----

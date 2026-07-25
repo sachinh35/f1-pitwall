@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,11 +17,15 @@ from api_pydantic_models.lap_comparison import (
 )
 from api_pydantic_models.lap_data import GetSessionLapDataResponse, LapDataRequest
 from api_pydantic_models.live_stream import (
+    AttachStreamRequest,
     AuthenticateRequest,
     AuthenticateResponse,
+    BrowserAuthStatusResponse,
+    CurrentLiveStreamResponse,
     GetTeamDriverPoolResponse,
     GetTeamRadioResponse,
     SimulateStreamRequest,
+    StartBrowserAuthResponse,
     StartStreamRequest,
     StartStreamResponse,
 )
@@ -28,10 +33,11 @@ from api_pydantic_models.race_control import GetSessionRaceControlEventsResponse
 from api_pydantic_models.race_sesssions import GetAllSessionTypesResponse, GetSessionResultsResponse, SessionType
 from api_pydantic_models.races import GetAvailableYearsResponse, GetRacesForYearsResponse
 from api_pydantic_models.stints import GetSessionStintsResponse
-from utils import f1_auth, lap_data, lap_telemetry_db, live_stream, race_control, race_session, replay, stints, team_radio_db
+from utils import f1_auth, lap_data, lap_telemetry_db, live_stream, live_tail, race_control, race_session, replay, stints, team_radio_db
 from utils.database import DatabaseManager
 from utils.lap_comparison import build_lap_trace, compute_delta_trace
 from utils.live_session_pipeline import get_pipeline
+from utils.live_stream import STREAM_LOGS_DIR
 from utils.team_driver_pool_db import get_team_driver_pool
 from utils.team_radio_pipeline import AUDIO_CACHE_DIR
 
@@ -203,6 +209,30 @@ async def authenticate_f1tv(request: AuthenticateRequest) -> AuthenticateRespons
         )
 
 
+@app.post("/authenticate-f1tv/browser-start", response_model=StartBrowserAuthResponse)
+async def start_browser_auth() -> StartBrowserAuthResponse:
+    """
+    Start the browser-based F1TV login flow (FastF1 Companion extension / the
+    f1login.fastf1.dev relay - see ATTRIBUTION.md and utils/f1_auth.py). Returns a
+    URL for the caller to open themselves; poll /authenticate-f1tv/browser-status
+    afterwards to learn when the login completes. Your F1TV password never reaches
+    this backend - only the resulting token, once you've logged in on that page.
+    """
+    try:
+        auth_url = f1_auth.start_browser_auth_flow()
+        return StartBrowserAuthResponse(auth_url=auth_url)
+    except Exception as e:
+        logging.exception("Error starting browser-based F1TV auth flow")
+        raise HTTPException(status_code=500, detail=f"Failed to start browser auth flow: {str(e)}")
+
+
+@app.get("/authenticate-f1tv/browser-status", response_model=BrowserAuthStatusResponse)
+async def browser_auth_status() -> BrowserAuthStatusResponse:
+    """Poll the in-flight browser-based F1TV login flow started by /authenticate-f1tv/browser-start."""
+    status = f1_auth.check_browser_auth_status()
+    return BrowserAuthStatusResponse(**status)
+
+
 @app.get("/team-driver-pool", response_model=GetTeamDriverPoolResponse)
 async def get_team_driver_pool_endpoint(season_year: int = CURRENT_SEASON_YEAR) -> GetTeamDriverPoolResponse:
     """
@@ -240,10 +270,15 @@ async def start_live_stream(request: StartStreamRequest) -> StartStreamResponse:
                 token = saved_token
                 logging.info("Using saved subscription token")
             else:
-                raise HTTPException(
-                    status_code=400,
-                    detail="No access token provided and no valid saved token found. Please authenticate first."
-                )
+                # F1's SignalR negotiate/connect doesn't actually require auth (only
+                # subscriber content, like team-radio audio, does) - F1SignalRStreamer
+                # already tolerates an empty token by skipping access_token_factory
+                # entirely (see utils/live_stream.py's _build_headers/connect). So rather
+                # than hard-blocking here, proceed unauthenticated: live timing data still
+                # works, only the team-radio audio download step will fail without a
+                # valid token, which it already does gracefully (failed_download status).
+                logging.info("No valid token available - proceeding unauthenticated")
+                token = ""
 
         streamer = live_stream.start_stream(
             access_token=token,
@@ -304,6 +339,69 @@ async def simulate_live_stream(request: SimulateStreamRequest = SimulateStreamRe
         raise HTTPException(status_code=500, detail=f"Failed to start simulation: {str(e)}")
 
 
+def _latest_live_capture_log() -> Optional[Path]:
+    """The most recently modified stream_logs/live_*.jsonl - written by an in-progress
+    scripts/capture_stream.py process. None if no capture is (or ever was) running."""
+    candidates = sorted(STREAM_LOGS_DIR.glob("live_*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _log_path_for_stream_id(stream_id: str) -> Optional[Path]:
+    """Reverse of live_tail's stream_id naming (live_<session_name>) - used by the SSE
+    endpoint's auto-reattach so a backend restart can rediscover which file a given
+    stream_id belongs to."""
+    if not stream_id.startswith("live_"):
+        return None
+    candidate = STREAM_LOGS_DIR / f"{stream_id}.jsonl"
+    return candidate if candidate.exists() else None
+
+
+@app.post("/attach-live-stream", response_model=StartStreamResponse)
+async def attach_live_stream(request: AttachStreamRequest = AttachStreamRequest()) -> StartStreamResponse:
+    """
+    Attach the backend to an in-progress standalone capture (scripts/capture_stream.py)
+    by tailing its raw jsonl file, rather than opening a second, backend-owned SignalR
+    connection (see /start-live-stream for that path). This is the intended way to watch
+    a session the standalone capture process is already recording: the capture keeps
+    running independent of the backend, so restarting the backend and calling this again
+    just re-attaches and catches straight back up - see utils/live_tail.py.
+    """
+    try:
+        if request.session_name:
+            log_path = STREAM_LOGS_DIR / f"live_{request.session_name}.jsonl"
+        else:
+            log_path = _latest_live_capture_log()
+            if log_path is None:
+                raise HTTPException(status_code=404, detail="No live capture found under stream_logs/live_*.jsonl")
+
+        stream_id = live_tail.start_tail(log_path, confirmed_roster=request.confirmed_roster)
+        logging.info("Attached to live capture: stream_id=%s log_file=%s", stream_id, log_path)
+        return StartStreamResponse(
+            success=True, message="Attached to live capture", stream_id=stream_id, log_file=str(log_path)
+        )
+    except HTTPException:
+        raise
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logging.exception("Error attaching to live capture")
+        raise HTTPException(status_code=500, detail=f"Failed to attach to live capture: {str(e)}")
+
+
+@app.get("/live-stream/current", response_model=CurrentLiveStreamResponse)
+async def get_current_live_stream() -> CurrentLiveStreamResponse:
+    """
+    Discover the currently-active standalone capture (if any) - lets the frontend find
+    and (re)connect to it without hardcoding a session name, including after its own
+    reload/reconnect following a backend restart.
+    """
+    log_path = _latest_live_capture_log()
+    if log_path is None:
+        raise HTTPException(status_code=404, detail="No live capture found under stream_logs/live_*.jsonl")
+    session_name = log_path.stem[len("live_"):]
+    return CurrentLiveStreamResponse(session_name=session_name, stream_id=log_path.stem, log_file=str(log_path))
+
+
 @app.get("/live/{stream_id}/events")
 async def stream_live_events(stream_id: str, request: Request) -> EventSourceResponse:
     """
@@ -316,6 +414,19 @@ async def stream_live_events(stream_id: str, request: Request) -> EventSourceRes
     discussion for the full reasoning.
     """
     pipeline = get_pipeline(stream_id)
+    if pipeline is None:
+        # The pipeline is only ever in-memory - lost on a backend restart. If this
+        # stream_id is a live-capture tail (see utils/live_tail.py's naming), the raw
+        # archive itself is untouched (the standalone capture process owns it, not the
+        # backend - see scripts/capture_stream.py), so we can transparently re-attach
+        # and catch back up instead of 404ing. This is what makes a backend restart
+        # invisible to the frontend beyond a brief reconnect.
+        log_path = _log_path_for_stream_id(stream_id)
+        if log_path is not None:
+            logging.info("No in-memory pipeline for stream_id=%s - re-attaching from %s", stream_id, log_path)
+            live_tail.start_tail(log_path, stream_id=stream_id)
+            pipeline = get_pipeline(stream_id)
+
     if pipeline is None:
         raise HTTPException(status_code=404, detail=f"No active session for stream_id={stream_id}")
 

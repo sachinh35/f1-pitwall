@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from utils import team_radio_pipeline
+from utils.radio_analysis import RadioMessageAnalysis
 from utils.session_state import RadioCapture
 
 
@@ -27,9 +28,32 @@ def _make_capture() -> RadioCapture:
     )
 
 
-def test_resolve_audio_url_builds_expected_url() -> None:
+def test_resolve_audio_url_without_session_path_falls_back_to_flat_url() -> None:
+    """Only used when a capture arrives before SessionInfo has ever been seen - real F1 CDN
+    404/403s a URL built this way (confirmed directly - see the session_path-aware test below),
+    so this is a "best effort, will fail" fallback, not the expected happy path."""
     url = team_radio_pipeline.resolve_audio_url("TeamRadio/MAXVER01_1_20251130_191032.mp3")
     assert url == "https://livetiming.formula1.com/static/TeamRadio/MAXVER01_1_20251130_191032.mp3"
+
+
+def test_resolve_audio_url_with_session_path_builds_the_real_working_url() -> None:
+    """This exact URL shape was confirmed with a real 200/valid-MPEG-audio fetch against F1's
+    live CDN (unauthenticated) - the session_path (from SessionInfo.Path) is what makes it work."""
+    url = team_radio_pipeline.resolve_audio_url(
+        "TeamRadio/MAXVER01_1_20251130_191032.mp3",
+        session_path="2025/2025-11-30_Qatar_Grand_Prix/2025-11-30_Race/",
+    )
+    assert url == (
+        "https://livetiming.formula1.com/static/2025/2025-11-30_Qatar_Grand_Prix/2025-11-30_Race/"
+        "TeamRadio/MAXVER01_1_20251130_191032.mp3"
+    )
+
+
+def test_resolve_audio_url_handles_session_path_without_trailing_slash() -> None:
+    url = team_radio_pipeline.resolve_audio_url(
+        "TeamRadio/x.mp3", session_path="2025/2025-11-30_Qatar_Grand_Prix/2025-11-30_Race"
+    )
+    assert url == "https://livetiming.formula1.com/static/2025/2025-11-30_Qatar_Grand_Prix/2025-11-30_Race/TeamRadio/x.mp3"
 
 
 def test_local_audio_path_uses_filename_and_session_key() -> None:
@@ -75,6 +99,18 @@ async def test_happy_path_transitions_through_every_status_in_order(monkeypatch:
         assert transcript == "Box box, confirm the tyre change."
         calls.append("mark_done")
 
+    async def fake_analyze_transcript(driver_label: str, lap_number, transcript: str) -> RadioMessageAnalysis:
+        calls.append("analyze_transcript")
+        assert driver_label == "Driver #1"
+        assert lap_number == 12
+        return RadioMessageAnalysis(
+            speaker_role="pit_wall", reasoning="Box call.", is_notable=True, notable_reason="Pit stop called."
+        )
+
+    async def fake_mark_analyzed(row_id: int, speaker_role: str, is_notable: bool, notable_reason) -> None:
+        calls.append("mark_analyzed")
+        assert (speaker_role, is_notable, notable_reason) == ("pit_wall", True, "Pit stop called.")
+
     monkeypatch.setattr(team_radio_pipeline.team_radio_db, "insert_pending", fake_insert_pending)
     monkeypatch.setattr(team_radio_pipeline.team_radio_db, "mark_downloading", fake_mark_downloading)
     monkeypatch.setattr(team_radio_pipeline, "download_binary", fake_download_binary)
@@ -82,23 +118,64 @@ async def test_happy_path_transitions_through_every_status_in_order(monkeypatch:
     monkeypatch.setattr(team_radio_pipeline.team_radio_db, "mark_transcribing", fake_mark_transcribing)
     monkeypatch.setattr(team_radio_pipeline.whisper_transcriber, "transcribe", fake_transcribe)
     monkeypatch.setattr(team_radio_pipeline.team_radio_db, "mark_done", fake_mark_done)
+    monkeypatch.setattr(team_radio_pipeline.radio_analysis, "analyze_transcript", fake_analyze_transcript)
+    monkeypatch.setattr(team_radio_pipeline.team_radio_db, "mark_analyzed", fake_mark_analyzed)
 
     on_downloaded = AsyncMock()
     on_transcribed = AsyncMock()
+    on_analyzed = AsyncMock()
 
     await team_radio_pipeline.process_radio_capture(
         session_key=9850,
         capture=_make_capture(),
         on_downloaded=on_downloaded,
         on_transcribed=on_transcribed,
+        on_analyzed=on_analyzed,
     )
 
     assert calls == [
         "insert_pending", "mark_downloading", "download_binary", "mark_downloaded",
-        "mark_transcribing", "transcribe", "mark_done",
+        "mark_transcribing", "transcribe", "mark_done", "analyze_transcript", "mark_analyzed",
     ]
     on_downloaded.assert_awaited_once_with("RADIO_CLIP_READY", 42)
     on_transcribed.assert_awaited_once_with("RADIO_TRANSCRIPT_READY", 42)
+    on_analyzed.assert_awaited_once_with("RADIO_ANALYSIS_READY", 42)
+
+
+@pytest.mark.asyncio
+async def test_analysis_failure_never_regresses_an_already_successful_transcription(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The transcript itself is already saved (mark_done) before analysis runs - a Gemini
+    failure (quota, network, bad model id) must be swallowed, not raised, and must never
+    touch mark_analyzed or the on_analyzed callback."""
+    async def fake_insert_pending(**kwargs) -> int:
+        return 55
+
+    async def fake_analyze_transcript(driver_label: str, lap_number, transcript: str) -> RadioMessageAnalysis:
+        raise RuntimeError("Gemini quota exceeded")
+
+    mark_analyzed = AsyncMock()
+    on_analyzed = AsyncMock()
+
+    monkeypatch.setattr(team_radio_pipeline.team_radio_db, "insert_pending", fake_insert_pending)
+    monkeypatch.setattr(team_radio_pipeline.team_radio_db, "mark_downloading", AsyncMock())
+    monkeypatch.setattr(team_radio_pipeline, "download_binary", AsyncMock(return_value=Path("x.mp3")))
+    monkeypatch.setattr(team_radio_pipeline.team_radio_db, "mark_downloaded", AsyncMock())
+    monkeypatch.setattr(team_radio_pipeline.team_radio_db, "mark_transcribing", AsyncMock())
+    monkeypatch.setattr(team_radio_pipeline.whisper_transcriber, "transcribe", AsyncMock(return_value="box box"))
+    monkeypatch.setattr(team_radio_pipeline.team_radio_db, "mark_done", AsyncMock())
+    monkeypatch.setattr(team_radio_pipeline.radio_analysis, "analyze_transcript", fake_analyze_transcript)
+    monkeypatch.setattr(team_radio_pipeline.team_radio_db, "mark_analyzed", mark_analyzed)
+
+    # Must not raise.
+    await team_radio_pipeline.process_radio_capture(
+        session_key=9850, capture=_make_capture(), on_analyzed=on_analyzed,
+    )
+
+    team_radio_pipeline.team_radio_db.mark_done.assert_awaited_once()
+    mark_analyzed.assert_not_awaited()
+    on_analyzed.assert_not_awaited()
 
 
 @pytest.mark.asyncio

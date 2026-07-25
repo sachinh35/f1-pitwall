@@ -32,6 +32,18 @@ class AuthenticateResponse(BaseModel):
     message: Optional[str] = Field(None, description="Status message")
 
 
+class StartBrowserAuthResponse(BaseModel):
+    """Response model for starting the browser-based (FastF1 Companion) auth flow."""
+    auth_url: str = Field(..., description="URL to open in a browser to complete F1TV login")
+
+
+class BrowserAuthStatusResponse(BaseModel):
+    """Response model for polling the browser-based auth flow's progress."""
+    status: str = Field(..., description="One of: not_started, pending, authenticated, failed")
+    auth_url: Optional[str] = Field(None, description="Present while status is 'pending' - the URL to open")
+    error: Optional[str] = Field(None, description="Present only when status is 'failed'")
+
+
 class StartStreamResponse(BaseModel):
     """Response model for starting a live stream."""
     success: bool = Field(..., description="Whether the stream was started successfully")
@@ -54,6 +66,27 @@ class SimulateStreamRequest(BaseModel):
     confirmed_roster: Optional[List[ConfirmedRosterEntry]] = Field(
         None, description="User-confirmed pre-race lineup - see ConfirmedRosterEntry"
     )
+
+
+class AttachStreamRequest(BaseModel):
+    """Request model for attaching the backend to an in-progress standalone capture
+    (scripts/capture_stream.py) by tailing its raw jsonl file - see utils/live_tail.py."""
+    session_name: Optional[str] = Field(
+        None,
+        description="Matches scripts/capture_stream.py's --session-name - resolves to "
+        "stream_logs/live_<session_name>.jsonl. If omitted, attaches to whichever live_*.jsonl "
+        "file was most recently modified.",
+    )
+    confirmed_roster: Optional[List[ConfirmedRosterEntry]] = Field(
+        None, description="User-confirmed pre-race lineup - see ConfirmedRosterEntry"
+    )
+
+
+class CurrentLiveStreamResponse(BaseModel):
+    """Response model for discovering the currently-active standalone capture, if any."""
+    session_name: str = Field(..., description="The session name, e.g. quali_2026_07_25")
+    stream_id: str = Field(..., description="The stream_id to connect GET /live/{stream_id}/events to")
+    log_file: str = Field(..., description="Path to the raw jsonl file under stream_logs/")
 
 
 class TeamDriverPoolEntry(BaseModel):
