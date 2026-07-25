@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from constants.openf1_api_endpoints import DRIVERS_API_URL, SESSIONS_API_URL
+from constants.openf1_api_endpoints import DRIVERS_API_URL, LAPS_API_URL, SESSIONS_API_URL
 from openf1_pydantic_models.f1_drivers import DriverInfo
 from openf1_pydantic_models.f1_sessions import F1Session
 from utils.http_client import fetch_json
@@ -41,6 +41,30 @@ async def fetch_session_metadata(session_key: int) -> Optional[F1Session]:
         logger.warning("OpenF1 returned no session metadata for session_key=%s", session_key)
         return None
     return F1Session(**payload[0])
+
+
+async def fetch_total_laps(session_key: int) -> Optional[int]:
+    """Resolve the race's total scheduled lap count as the highest lap_number OpenF1's
+    /v1/laps has recorded for this session.
+
+    F1's live SignalR feed never carries this - confirmed by enumerating every LapCount
+    message across a full captured race: every one ever contains only {"CurrentLap": N},
+    never a total (also confirmed SessionInfo/SessionData carry nothing lap-count-related
+    either). This is necessarily retrospective: for a genuinely live/future session, OpenF1
+    won't have any lap records yet, so this correctly returns None until laps have actually
+    been recorded - same "can't trust OpenF1 for live data" constraint ConfirmedRosterEntry
+    already works around for the driver roster, just with no workaround available here since
+    there's no equivalent of a human confirming a race's total lap count up front.
+    """
+    try:
+        payload = await fetch_json(LAPS_API_URL, params={"session_key": session_key}, timeout=_OPENF1_TIMEOUT_SECONDS)
+    except Exception:
+        logger.exception("Failed to fetch laps for total-laps resolution, session_key=%s", session_key)
+        return None
+    if not payload:
+        return None
+    lap_numbers = [lap["lap_number"] for lap in payload if lap.get("lap_number") is not None]
+    return max(lap_numbers) if lap_numbers else None
 
 
 async def fetch_driver_roster(session_key: int) -> List[DriverInfo]:

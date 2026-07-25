@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from utils.session_state import SessionState, deep_merge, parse_lap_time_to_seconds
+from utils.session_state import SessionState, _parse_gap_seconds, deep_merge, parse_lap_time_to_seconds
 
 FIXTURES = json.loads((Path(__file__).parent / "fixtures" / "real_stream_samples.json").read_text())
 
@@ -93,6 +93,37 @@ def test_lap_completion_fires_on_number_of_laps_increase_with_buffered_telemetry
     assert completed.lap_duration_seconds == pytest.approx(87.150)
     assert completed.aggregates.max_speed_kmh == 300
     assert completed.aggregates.drs_active_pct == 100
+
+
+def test_completed_lap_carries_gap_to_ahead_seconds() -> None:
+    state = SessionState()
+    msgs = FIXTURES["timing_data_lap_progression_driver_81"]
+
+    state.apply("TimingData", msgs[0])  # NumberOfLaps=1
+    state._buffer_for(81).add_car_sample(
+        utc=datetime(2025, 11, 30, 16, 0, 0),
+        rpm=11000, speed_kmh=300, gear=8, throttle_pct=100, brake_pct=0, drs=12,
+    )
+    # The message carrying NumberOfLaps=2 also carries the gap that applied to lap 1,
+    # matching real feed behavior (see _advance_lap's docstring).
+    msg_with_gap = {"Lines": {"81": {**msgs[1]["Lines"]["81"], "IntervalToPositionAhead": {"Value": "+0.850"}}}}
+    diff = state.apply("TimingData", msg_with_gap)
+
+    assert diff.completed_laps[0].gap_to_ahead_seconds == pytest.approx(0.850)
+
+
+def test_completed_lap_gap_to_ahead_seconds_is_none_when_unparseable() -> None:
+    state = SessionState()
+    msgs = FIXTURES["timing_data_lap_progression_driver_81"]
+
+    state.apply("TimingData", msgs[0])
+    state._buffer_for(81).add_car_sample(
+        utc=datetime(2025, 11, 30, 16, 0, 0),
+        rpm=11000, speed_kmh=300, gear=8, throttle_pct=100, brake_pct=0, drs=12,
+    )
+    diff = state.apply("TimingData", msgs[1])  # no IntervalToPositionAhead at all
+
+    assert diff.completed_laps[0].gap_to_ahead_seconds is None
 
 
 def test_lap_completion_skipped_when_no_telemetry_was_buffered() -> None:
@@ -315,3 +346,132 @@ def test_position_topic_buffers_samples_for_every_driver_seen() -> None:
     assert diff.event_name == "Position.z"
     some_driver = diff.changed_driver_numbers[0]
     assert len(state._buffer_for(some_driver).x) > 0
+
+
+# ---- Battle Radar: _parse_gap_seconds ----
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [("+0.880", 0.880), ("+1.234", 1.234), ("0.500", 0.5), ("1L", None), (None, None), ("", None)],
+)
+def test_parse_gap_seconds(value, expected) -> None:
+    result = _parse_gap_seconds(value)
+    if expected is None:
+        assert result is None
+    else:
+        assert result == pytest.approx(expected)
+
+
+# ---- Battle Radar: trend detection + alert tiers ----
+
+def _advance_with_gap(state: SessionState, driver_number: int, lap_number: int, position: str, gap_value) -> None:
+    """Simulate one TimingData message that both announces `lap_number` (via NumberOfLaps)
+    and carries the gap-to-car-ahead that applied to the lap just completed - matching the
+    real feed's shape, where LastLapTime/IntervalToPositionAhead ride along on the same
+    message that bumps NumberOfLaps (see _advance_lap's docstring)."""
+    fields = {"NumberOfLaps": lap_number, "Position": position}
+    if gap_value is not None:
+        fields["IntervalToPositionAhead"] = {"Value": gap_value}
+    state.apply("TimingData", {"Lines": {str(driver_number): fields}})
+
+
+def test_battle_radar_no_alert_with_only_one_gap_sample() -> None:
+    state = SessionState()
+    _advance_with_gap(state, 44, 1, "2", "+2.500")  # first sighting, no advance yet
+    _advance_with_gap(state, 44, 2, "2", "+1.100")  # lap 1 completes, records exactly one sample
+    assert 44 not in state.battle_radar
+
+
+def test_battle_radar_fires_battle_tier_after_two_closing_laps() -> None:
+    state = SessionState()
+    _advance_with_gap(state, 44, 1, "2", "+2.500")
+    _advance_with_gap(state, 44, 2, "2", "+1.800")  # records lap 1 = 1.8s
+    _advance_with_gap(state, 44, 3, "2", "+1.100")  # records lap 2 = 1.1s, decreasing -> gaining
+
+    alert = state.battle_radar[44]
+    assert alert["alert_level"] == "battle"
+    assert alert["gap_seconds"] == pytest.approx(1.1)
+    assert alert["lap_history"] == [
+        {"lap_number": 1, "gap_seconds": pytest.approx(1.8)},
+        {"lap_number": 2, "gap_seconds": pytest.approx(1.1)},
+    ]
+
+
+def test_battle_radar_fires_upcoming_tier_between_thresholds() -> None:
+    state = SessionState()
+    _advance_with_gap(state, 44, 1, "2", "+2.500")
+    _advance_with_gap(state, 44, 2, "2", "+1.900")
+    _advance_with_gap(state, 44, 3, "2", "+1.600")  # decreasing, but 1.3 <= 1.6 < 2.0
+
+    assert state.battle_radar[44]["alert_level"] == "upcoming"
+
+
+def test_battle_radar_no_alert_when_gap_is_flat() -> None:
+    state = SessionState()
+    _advance_with_gap(state, 44, 1, "2", "+1.000")
+    _advance_with_gap(state, 44, 2, "2", "+1.000")
+    _advance_with_gap(state, 44, 3, "2", "+1.000")
+    assert 44 not in state.battle_radar
+
+
+def test_battle_radar_no_alert_when_gap_is_widening() -> None:
+    state = SessionState()
+    _advance_with_gap(state, 44, 1, "2", "+1.000")
+    _advance_with_gap(state, 44, 2, "2", "+1.500")
+    _advance_with_gap(state, 44, 3, "2", "+2.000")
+    assert 44 not in state.battle_radar
+
+
+def test_battle_radar_alert_clears_once_gap_starts_widening_again() -> None:
+    state = SessionState()
+    _advance_with_gap(state, 44, 1, "2", "+2.500")
+    _advance_with_gap(state, 44, 2, "2", "+1.800")
+    _advance_with_gap(state, 44, 3, "2", "+1.100")
+    assert 44 in state.battle_radar  # closing - alert active
+
+    _advance_with_gap(state, 44, 4, "2", "+1.900")  # widened again
+    assert 44 not in state.battle_radar
+
+
+def test_battle_radar_no_alert_for_leader_with_no_interval_field() -> None:
+    state = SessionState()
+    _advance_with_gap(state, 1, 1, "1", None)
+    _advance_with_gap(state, 1, 2, "1", None)
+    assert 1 not in state.battle_radar
+
+
+def test_battle_radar_no_alert_for_lapped_car_interval() -> None:
+    state = SessionState()
+    _advance_with_gap(state, 20, 1, "18", "1L")
+    _advance_with_gap(state, 20, 2, "18", "1L")
+    assert 20 not in state.battle_radar
+
+
+def test_battle_radar_resolves_ahead_driver_number_from_position() -> None:
+    state = SessionState()
+    state.apply("TimingData", {"Lines": {"1": {"Position": "1"}, "44": {"Position": "2"}}})
+    _advance_with_gap(state, 44, 1, "2", "+2.500")
+    _advance_with_gap(state, 44, 2, "2", "+1.800")
+    _advance_with_gap(state, 44, 3, "2", "+1.100")
+
+    assert state.battle_radar[44]["ahead_driver_number"] == 1
+
+
+def test_battle_radar_lap_history_capped_at_five_samples() -> None:
+    state = SessionState()
+    gaps = ["+3.000", "+2.800", "+2.600", "+2.400", "+2.200", "+2.000", "+1.800"]
+    for lap_number, gap in enumerate(gaps, start=1):
+        _advance_with_gap(state, 44, lap_number, "2", gap)
+    # 7 laps announced -> 6 gap samples recorded (first message only initializes NumberOfLaps).
+    assert len(state.battle_radar[44]["lap_history"]) == 5
+    assert state.battle_radar[44]["lap_history"][0]["lap_number"] == 2  # oldest sample evicted
+
+
+def test_battle_radar_touched_reported_on_diff_and_reflected_in_snapshot() -> None:
+    state = SessionState()
+    _advance_with_gap(state, 44, 1, "2", "+2.500")
+    diff = state.apply(
+        "TimingData", {"Lines": {"44": {"NumberOfLaps": 2, "Position": "2", "IntervalToPositionAhead": {"Value": "+1.800"}}}}
+    )
+    assert diff.battle_radar_touched == [44]
+    assert state.snapshot()["battle_radar"] == state.battle_radar

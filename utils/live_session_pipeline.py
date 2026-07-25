@@ -29,9 +29,10 @@ from utils.live_persistence import (
     persist_driver_roster,
     persist_race_control_entry,
     persist_session_metadata,
+    persist_total_laps,
     persist_weather_snapshot,
 )
-from utils.session_metadata import fetch_driver_roster, fetch_session_metadata
+from utils.session_metadata import fetch_driver_roster, fetch_session_metadata, fetch_total_laps
 from utils.session_state import CompletedLap, RadioCapture, SessionState, StateDiff
 from utils.team_radio_pipeline import process_radio_capture
 
@@ -146,6 +147,12 @@ def diff_to_wire(diff: StateDiff, state: SessionState) -> Dict[str, Any]:
         wire["completed_laps"] = [_completed_lap_to_wire(lap) for lap in diff.completed_laps]
     if diff.new_radio_captures:
         wire["new_radio_captures"] = [_radio_capture_to_wire(c) for c in diff.new_radio_captures]
+    if diff.battle_radar_touched:
+        # None for a driver means their alert was just cleared - the client removes it,
+        # rather than never learning a previously-active alert stopped applying.
+        wire["battle_radar"] = {
+            str(d): state.battle_radar.get(d) for d in set(diff.battle_radar_touched)
+        }
 
     return wire
 
@@ -321,10 +328,13 @@ class LiveSessionPipeline:
             return
 
         if self._confirmed_roster is not None:
-            session_meta = await fetch_session_metadata(session_key)
+            session_meta, total_laps = await asyncio.gather(
+                fetch_session_metadata(session_key), self._resolve_and_broadcast_total_laps(session_key)
+            )
             if session_meta is not None:
                 try:
                     await persist_session_metadata(session_meta)
+                    await self._persist_total_laps_if_resolved(session_key, total_laps)
                 except Exception:
                     logger.exception("Failed to persist session metadata for session_key=%s", session_key)
             try:
@@ -333,13 +343,16 @@ class LiveSessionPipeline:
                 logger.exception("Failed to persist confirmed driver roster for session_key=%s", session_key)
             return
 
-        session_meta, drivers = await asyncio.gather(
-            fetch_session_metadata(session_key), fetch_driver_roster(session_key)
+        session_meta, drivers, total_laps = await asyncio.gather(
+            fetch_session_metadata(session_key),
+            fetch_driver_roster(session_key),
+            self._resolve_and_broadcast_total_laps(session_key),
         )
 
         if session_meta is not None:
             try:
                 await persist_session_metadata(session_meta)
+                await self._persist_total_laps_if_resolved(session_key, total_laps)
             except Exception:
                 logger.exception("Failed to persist session metadata for session_key=%s", session_key)
 
@@ -357,6 +370,33 @@ class LiveSessionPipeline:
         await self._broadcast(
             "driver_roster", {"driver_roster": {str(k): v for k, v in roster_by_number.items()}}
         )
+
+    async def _resolve_and_broadcast_total_laps(self, session_key: int) -> Optional[int]:
+        """Resolve this race's total lap count via OpenF1 (see fetch_total_laps for why the
+        live feed itself can't provide this) and, if found, fold it into state.lap_count and
+        broadcast a "LapCount" event - the exact same wire shape a real LapCount message
+        produces via diff_to_wire, so the frontend's existing SessionClock rendering picks it
+        up with no changes needed. Returns the resolved value (or None) so the caller can
+        persist it once it knows the `sessions` row exists - see _persist_total_laps_if_resolved.
+        A no-op (no broadcast) if OpenF1 has no lap records yet, e.g. a genuinely live/future
+        session - CurrentLap-only display is the correct fallback in that case.
+        """
+        total_laps = await fetch_total_laps(session_key)
+        if total_laps is None:
+            return None
+        self.state.lap_count["TotalLaps"] = total_laps
+        await self._broadcast("LapCount", {"lap_count": dict(self.state.lap_count)})
+        return total_laps
+
+    async def _persist_total_laps_if_resolved(self, session_key: int, total_laps: Optional[int]) -> None:
+        """Write total_laps to Postgres - called only after persist_session_metadata has
+        succeeded, since this is an UPDATE against a `sessions` row that must already exist."""
+        if total_laps is None:
+            return
+        try:
+            await persist_total_laps(session_key, total_laps)
+        except Exception:
+            logger.exception("Failed to persist total_laps for session_key=%s", session_key)
 
     async def _broadcast_radio_event(self, event_name: str, row_id: int) -> None:
         """Forward team_radio_pipeline's on_downloaded/on_transcribed callbacks onto this session's SSE

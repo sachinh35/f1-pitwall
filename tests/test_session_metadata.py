@@ -86,3 +86,34 @@ async def test_fetch_driver_roster_returns_empty_list_on_network_error(monkeypat
     )
 
     assert await session_metadata.fetch_driver_roster(9850) == []
+
+
+# ---- fetch_total_laps ----
+
+@pytest.mark.asyncio
+async def test_fetch_total_laps_returns_highest_lap_number_seen(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        session_metadata,
+        "fetch_json",
+        AsyncMock(return_value=[{"lap_number": 12}, {"lap_number": 57}, {"lap_number": 34}]),
+    )
+
+    assert await session_metadata.fetch_total_laps(9850) == 57
+
+
+@pytest.mark.asyncio
+async def test_fetch_total_laps_returns_none_when_openf1_has_no_lap_records_yet(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The correct outcome for a genuinely live/future session - OpenF1 has no laps recorded
+    until they've actually happened, so this must not fabricate a total."""
+    monkeypatch.setattr(session_metadata, "fetch_json", AsyncMock(return_value=[]))
+
+    assert await session_metadata.fetch_total_laps(9850) is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_total_laps_returns_none_on_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        session_metadata, "fetch_json", AsyncMock(side_effect=httpx.TransportError("boom"))
+    )
+
+    assert await session_metadata.fetch_total_laps(9850) is None

@@ -9,6 +9,7 @@ from openf1_pydantic_models.f1_drivers import DriverInfo
 from openf1_pydantic_models.f1_sessions import F1Session
 from utils import live_persistence
 from utils.live_persistence import _parse_rc_timestamp, _to_float, _to_int, _to_naive_utc
+from utils.session_state import CompletedLap, LapAggregates, TelemetrySampleBuffer
 
 # date_start/date_end are timezone-aware here on purpose - that's exactly what OpenF1 actually
 # returns, and what previously blew up asyncpg's plain-TIMESTAMP codec (see _to_naive_utc).
@@ -228,3 +229,55 @@ async def test_persist_confirmed_driver_roster_no_op_for_empty_list(monkeypatch:
     await live_persistence.persist_confirmed_driver_roster(9850, [])
 
     mock_conn.execute.assert_not_awaited()
+
+
+# ---- persist_completed_lap (mocked DB) ----
+
+def _sample_completed_lap(gap_to_ahead_seconds=1.1) -> CompletedLap:
+    buffer = TelemetrySampleBuffer()
+    buffer.add_car_sample(
+        utc=datetime(2025, 11, 30, 16, 0, 0), rpm=11000, speed_kmh=300, gear=8, throttle_pct=100, brake_pct=0, drs=12
+    )
+    return CompletedLap(
+        driver_number=44,
+        lap_number=12,
+        lap_duration_seconds=87.150,
+        aggregates=LapAggregates(avg_speed_kmh=300, max_speed_kmh=300, avg_throttle_pct=100, drs_active_pct=100),
+        telemetry=buffer,
+        gap_to_ahead_seconds=gap_to_ahead_seconds,
+    )
+
+
+@pytest.mark.asyncio
+async def test_persist_completed_lap_includes_gap_to_ahead_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_conn = _mock_db(monkeypatch)
+
+    await live_persistence.persist_completed_lap(9850, 1275, _sample_completed_lap(gap_to_ahead_seconds=1.05))
+
+    lap_data_call_args = mock_conn.execute.call_args_list[0].args
+    # query, meeting_key, session_key, driver_number, lap_number, lap_duration, avg_speed_kmh,
+    # max_speed_kmh, avg_throttle_pct, drs_active_pct, gap_to_ahead_seconds
+    assert lap_data_call_args[-1] == pytest.approx(1.05)
+
+
+@pytest.mark.asyncio
+async def test_persist_completed_lap_gap_to_ahead_seconds_defaults_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_conn = _mock_db(monkeypatch)
+
+    await live_persistence.persist_completed_lap(9850, 1275, _sample_completed_lap(gap_to_ahead_seconds=None))
+
+    lap_data_call_args = mock_conn.execute.call_args_list[0].args
+    assert lap_data_call_args[-1] is None
+
+
+# ---- persist_total_laps (mocked DB) ----
+
+@pytest.mark.asyncio
+async def test_persist_total_laps_executes_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_conn = _mock_db(monkeypatch)
+
+    await live_persistence.persist_total_laps(9850, 57)
+
+    mock_conn.execute.assert_awaited_once_with(
+        "UPDATE sessions SET total_laps = $2 WHERE session_key = $1", 9850, 57
+    )

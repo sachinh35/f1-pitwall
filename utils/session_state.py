@@ -18,9 +18,10 @@ from documentation - F1 publishes none for this feed.
 from __future__ import annotations
 
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 
 from utils.telemetry_decoder import (
     DRS_ACTIVE_CODES,
@@ -31,6 +32,34 @@ from utils.telemetry_decoder import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Battle Radar thresholds: a driver only ever shows an alert while *closing*
+# on the car ahead (never merely running a small/medium gap) - see
+# _update_battle_radar. "battle" is the more urgent tier (an overtake attempt
+# is plausible within a lap or two); "upcoming" is the earlier warning.
+BATTLE_GAP_THRESHOLD_SECONDS = 1.3
+UPCOMING_GAP_THRESHOLD_SECONDS = 2.0
+# How many of a driver's most recent completed-lap gap samples are kept -
+# enough for the hover trend graph (5) while trend detection itself only
+# ever looks at the most recent 3.
+_GAP_HISTORY_MAXLEN = 5
+_TREND_WINDOW = 3
+
+
+def _parse_gap_seconds(value: Optional[str]) -> Optional[float]:
+    """
+    Parse an IntervalToPositionAhead.Value string ("+0.880") into seconds.
+    Returns None rather than raising for values that aren't a plain gap -
+    the race leader has no car ahead (field absent), and a lapped car's
+    interval is a lap count ("1L"), neither of which is a battle-radar
+    candidate.
+    """
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
 
 
 def deep_merge(base: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
@@ -136,6 +165,10 @@ class CompletedLap:
     lap_duration_seconds: Optional[float]
     aggregates: LapAggregates
     telemetry: TelemetrySampleBuffer
+    # The gap to the car ahead at this lap boundary (Battle Radar's raw input) - persisted
+    # alongside the rest of this lap's data so the closing/widening trend survives a
+    # backend restart, not just held in SessionState._gap_history's in-memory buffer.
+    gap_to_ahead_seconds: Optional[float] = None
 
 
 def parse_lap_time_to_seconds(value: Optional[str]) -> Optional[float]:
@@ -179,6 +212,10 @@ class StateDiff:
     # the Warm tier immediately, not just on a lap boundary.
     new_weather_snapshot: Optional[Dict[str, Any]] = None
     new_race_control_entries: List[Dict[str, Any]] = field(default_factory=list)
+    # Drivers whose Battle Radar status may have changed this apply() call (set or
+    # cleared) - not the alerts themselves, since those live on SessionState.battle_radar
+    # and diff_to_wire reads the current value for each touched driver from there.
+    battle_radar_touched: List[int] = field(default_factory=list)
 
 
 class SessionState:
@@ -218,6 +255,12 @@ class SessionState:
         # number, no names/teams), so it isn't wired through the handler
         # dispatch below.
         self.driver_roster: Dict[int, Dict[str, Any]] = {}
+
+        # Battle Radar: each driver's last few completed-lap gap-to-car-ahead
+        # samples (lap_number, gap_seconds), and the currently active alert (if
+        # any) derived from that history - see _record_gap_sample/_update_battle_radar.
+        self._gap_history: Dict[int, Deque[Tuple[int, float]]] = {}
+        self.battle_radar: Dict[int, Dict[str, Any]] = {}
 
         self._seen_radio_paths: Set[str] = set()
         self._current_lap_by_driver: Dict[int, int] = {}
@@ -299,6 +342,7 @@ class SessionState:
             "extrapolated_clock": self.extrapolated_clock,
             "race_control_messages": self.race_control_messages,
             "driver_roster": self.driver_roster,
+            "battle_radar": self.battle_radar,
         }
 
     # ---- per-topic handlers ----
@@ -314,43 +358,122 @@ class SessionState:
             diff.changed_driver_numbers.append(driver_number)
 
             if "NumberOfLaps" in fields:
-                completed = self._advance_lap(driver_number, fields["NumberOfLaps"])
+                completed, gap_touched = self._advance_lap(driver_number, fields["NumberOfLaps"])
                 if completed is not None:
                     diff.completed_laps.append(completed)
+                if gap_touched:
+                    diff.battle_radar_touched.append(driver_number)
         return diff
 
-    def _advance_lap(self, driver_number: int, new_lap_number: int) -> Optional[CompletedLap]:
+    def _advance_lap(self, driver_number: int, new_lap_number: int) -> Tuple[Optional[CompletedLap], bool]:
         """
         Detect a lap boundary: whenever a driver's NumberOfLaps increases, the
         *previous* lap just completed. Flushes and resets that driver's
-        telemetry buffer. Returns None if this isn't actually an advance
-        (first sighting of the driver, or a duplicate/out-of-order message).
+        telemetry buffer, and records a Battle Radar gap sample. Returns
+        (None, False) if this isn't actually an advance (first sighting of the
+        driver, or a duplicate/out-of-order message); the bool return
+        indicates whether a gap sample was (attempted to be) recorded, which
+        can be true even when no CompletedLap is produced (e.g. the very
+        first lap, with no buffered telemetry yet).
         """
         previous_lap = self._current_lap_by_driver.get(driver_number)
         self._current_lap_by_driver[driver_number] = new_lap_number
 
         if previous_lap is None or new_lap_number <= previous_lap:
-            return None
+            return None, False
 
         # The message that announces the NEW lap number carries the just-completed
-        # lap's time in the same payload (confirmed against real captured data:
-        # the message with NumberOfLaps=2 is the one carrying LastLapTime for lap 1).
-        # `self.drivers` was already merged with this message's fields by the caller.
+        # lap's time (and, likewise, its gap-to-car-ahead) in the same payload
+        # (confirmed against real captured data: the message with NumberOfLaps=2 is
+        # the one carrying LastLapTime for lap 1). `self.drivers` was already merged
+        # with this message's fields by the caller.
+        gap_to_ahead_seconds = self._record_gap_sample(driver_number, previous_lap)
+
         last_lap_time = self.drivers.get(driver_number, {}).get("LastLapTime", {})
         lap_duration_seconds = parse_lap_time_to_seconds(last_lap_time.get("Value"))
 
         buffer = self._telemetry_buffers.pop(driver_number, None)
         self._telemetry_buffers[driver_number] = TelemetrySampleBuffer()
         if buffer is None or not buffer.speed:
+            return None, True
+
+        return (
+            CompletedLap(
+                driver_number=driver_number,
+                lap_number=previous_lap,
+                lap_duration_seconds=lap_duration_seconds,
+                aggregates=buffer.compute_aggregates(DRS_ACTIVE_CODES),
+                telemetry=buffer,
+                gap_to_ahead_seconds=gap_to_ahead_seconds,
+            ),
+            True,
+        )
+
+    def _record_gap_sample(self, driver_number: int, lap_number: int) -> Optional[float]:
+        """Append this driver's gap-to-car-ahead at the just-completed lap boundary to
+        its rolling history, re-evaluate whether a Battle Radar alert is warranted, and
+        return the parsed gap (or None) so the caller can persist it on this lap's record."""
+        raw_value = self.drivers.get(driver_number, {}).get("IntervalToPositionAhead", {}).get("Value")
+        gap_seconds = _parse_gap_seconds(raw_value)
+        if gap_seconds is None:
+            # Leader (no car ahead) or a lapped-car interval ("1L") - never a battle-radar candidate.
+            self.battle_radar.pop(driver_number, None)
             return None
 
-        return CompletedLap(
-            driver_number=driver_number,
-            lap_number=previous_lap,
-            lap_duration_seconds=lap_duration_seconds,
-            aggregates=buffer.compute_aggregates(DRS_ACTIVE_CODES),
-            telemetry=buffer,
-        )
+        history = self._gap_history.setdefault(driver_number, deque(maxlen=_GAP_HISTORY_MAXLEN))
+        history.append((lap_number, gap_seconds))
+        self._update_battle_radar(driver_number)
+        return gap_seconds
+
+    def _update_battle_radar(self, driver_number: int) -> None:
+        """
+        Recompute driver_number's Battle Radar alert from its gap history.
+        Requires at least 2 completed-lap samples (never fires off a single
+        noisy reading) and a non-increasing gap across the last up to 3 laps,
+        net strictly decreasing, before considering the driver "gaining" -
+        only then do the 1.3s/2.0s thresholds decide the alert tier.
+        """
+        history = self._gap_history.get(driver_number)
+        if history is None or len(history) < 2:
+            self.battle_radar.pop(driver_number, None)
+            return
+
+        recent = list(history)[-_TREND_WINDOW:]
+        gaps = [gap for _, gap in recent]
+        is_gaining = gaps[-1] < gaps[0] and all(later <= earlier for earlier, later in zip(gaps, gaps[1:]))
+        if not is_gaining:
+            self.battle_radar.pop(driver_number, None)
+            return
+
+        current_gap = gaps[-1]
+        if current_gap < BATTLE_GAP_THRESHOLD_SECONDS:
+            alert_level = "battle"
+        elif current_gap < UPCOMING_GAP_THRESHOLD_SECONDS:
+            alert_level = "upcoming"
+        else:
+            self.battle_radar.pop(driver_number, None)
+            return
+
+        self.battle_radar[driver_number] = {
+            "driver_number": driver_number,
+            "ahead_driver_number": self._ahead_driver_number(driver_number),
+            "gap_seconds": current_gap,
+            "alert_level": alert_level,
+            "lap_history": [{"lap_number": lap, "gap_seconds": gap} for lap, gap in history],
+        }
+
+    def _ahead_driver_number(self, driver_number: int) -> Optional[int]:
+        """The driver currently one position ahead of driver_number, or None if unknown
+        (position not yet seen, or driver_number is already in P1)."""
+        position = self.drivers.get(driver_number, {}).get("Position")
+        try:
+            target_position = str(int(position) - 1)
+        except (TypeError, ValueError):
+            return None
+        for other_number, fields in self.drivers.items():
+            if other_number != driver_number and fields.get("Position") == target_position:
+                return other_number
+        return None
 
     def _apply_car_data(self, payload: str) -> StateDiff:
         diff = StateDiff(event_name="CarData.z")

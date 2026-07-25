@@ -55,19 +55,20 @@ async def persist_completed_lap(session_key: int, meeting_key: int, lap: Complet
                 """
                 INSERT INTO lap_data (
                     meeting_key, session_key, driver_number, lap_number, lap_duration,
-                    avg_speed_kmh, max_speed_kmh, avg_throttle_pct, drs_active_pct
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    avg_speed_kmh, max_speed_kmh, avg_throttle_pct, drs_active_pct, gap_to_ahead_seconds
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 ON CONFLICT (session_key, driver_number, lap_number) DO UPDATE SET
                     lap_duration = EXCLUDED.lap_duration,
                     avg_speed_kmh = EXCLUDED.avg_speed_kmh,
                     max_speed_kmh = EXCLUDED.max_speed_kmh,
                     avg_throttle_pct = EXCLUDED.avg_throttle_pct,
                     drs_active_pct = EXCLUDED.drs_active_pct,
+                    gap_to_ahead_seconds = EXCLUDED.gap_to_ahead_seconds,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 meeting_key, session_key, lap.driver_number, lap.lap_number, lap.lap_duration_seconds,
                 lap.aggregates.avg_speed_kmh, lap.aggregates.max_speed_kmh,
-                lap.aggregates.avg_throttle_pct, lap.aggregates.drs_active_pct,
+                lap.aggregates.avg_throttle_pct, lap.aggregates.drs_active_pct, lap.gap_to_ahead_seconds,
             )
 
             telemetry = lap.telemetry
@@ -205,6 +206,17 @@ async def persist_session_metadata(session: F1Session) -> None:
             session.gmt_offset, session.year,
         )
     logger.info("Persisted session metadata session_key=%s location=%s", session.session_key, session.location)
+
+
+async def persist_total_laps(session_key: int, total_laps: int) -> None:
+    """Record the resolved total race-lap count against an already-persisted session row
+    (see utils.session_metadata.fetch_total_laps for why this is a separate, later write
+    rather than part of persist_session_metadata's OpenF1-sourced F1Session fields)."""
+    async with DatabaseManager.get_connection() as conn:
+        await conn.execute(
+            "UPDATE sessions SET total_laps = $2 WHERE session_key = $1", session_key, total_laps
+        )
+    logger.info("Persisted total_laps session_key=%s total_laps=%s", session_key, total_laps)
 
 
 async def persist_driver_roster(session_key: int, drivers: List[DriverInfo]) -> None:

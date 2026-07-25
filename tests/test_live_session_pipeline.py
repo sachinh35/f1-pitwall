@@ -80,6 +80,8 @@ def _mock_persistence(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(pipeline_module, "persist_confirmed_driver_roster", AsyncMock())
     monkeypatch.setattr(pipeline_module, "fetch_session_metadata", AsyncMock(return_value=None))
     monkeypatch.setattr(pipeline_module, "fetch_driver_roster", AsyncMock(return_value=[]))
+    monkeypatch.setattr(pipeline_module, "fetch_total_laps", AsyncMock(return_value=None))
+    monkeypatch.setattr(pipeline_module, "persist_total_laps", AsyncMock())
 
 
 def test_subscribe_delivers_initial_snapshot() -> None:
@@ -230,6 +232,76 @@ async def test_session_info_fetches_persists_and_broadcasts_driver_roster(
 
 
 @pytest.mark.asyncio
+async def test_session_info_broadcasts_and_persists_resolved_total_laps(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pipeline_module, "fetch_session_metadata", AsyncMock(return_value=_SAMPLE_SESSION_META))
+    monkeypatch.setattr(pipeline_module, "fetch_total_laps", AsyncMock(return_value=57))
+
+    pipeline = LiveSessionPipeline(stream_id="test-total-laps-1")
+    _, queue = pipeline.subscribe()
+    queue.get_nowait()  # drain initial snapshot
+
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+    queue.get_nowait()  # drain the SessionInfo broadcast itself
+    await _drain_background_tasks(pipeline)
+
+    assert pipeline.state.lap_count["TotalLaps"] == 57
+    pipeline_module.persist_total_laps.assert_awaited_once_with(9850, 57)
+
+    message = queue.get_nowait()
+    assert message["event"] == "LapCount"
+    assert message["data"]["lap_count"]["TotalLaps"] == 57
+
+
+@pytest.mark.asyncio
+async def test_no_lap_count_broadcast_when_openf1_has_no_laps_yet(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Correct behavior for a genuinely live/future session - no fabricated total, no extra broadcast."""
+    monkeypatch.setattr(pipeline_module, "fetch_session_metadata", AsyncMock(return_value=_SAMPLE_SESSION_META))
+    monkeypatch.setattr(pipeline_module, "fetch_total_laps", AsyncMock(return_value=None))
+
+    pipeline = LiveSessionPipeline(stream_id="test-total-laps-2")
+    _, queue = pipeline.subscribe()
+    queue.get_nowait()
+
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+    queue.get_nowait()  # drain the SessionInfo broadcast itself
+    await _drain_background_tasks(pipeline)
+
+    assert "TotalLaps" not in pipeline.state.lap_count
+    pipeline_module.persist_total_laps.assert_not_awaited()
+    assert queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_total_laps_not_persisted_when_session_metadata_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """persist_total_laps would UPDATE a `sessions` row that was never inserted - must be skipped,
+    not fired anyway, when OpenF1 has no session metadata (so persist_session_metadata never ran)."""
+    monkeypatch.setattr(pipeline_module, "fetch_session_metadata", AsyncMock(return_value=None))
+    monkeypatch.setattr(pipeline_module, "fetch_total_laps", AsyncMock(return_value=57))
+
+    pipeline = LiveSessionPipeline(stream_id="test-total-laps-3")
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+    await _drain_background_tasks(pipeline)
+
+    pipeline_module.persist_session_metadata.assert_not_awaited()
+    pipeline_module.persist_total_laps.assert_not_awaited()
+    # The in-memory/broadcast side still resolves independently of session-metadata persistence.
+    assert pipeline.state.lap_count["TotalLaps"] == 57
+
+
+@pytest.mark.asyncio
+async def test_confirmed_roster_path_also_resolves_total_laps(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pipeline_module, "fetch_session_metadata", AsyncMock(return_value=_SAMPLE_SESSION_META))
+    monkeypatch.setattr(pipeline_module, "fetch_total_laps", AsyncMock(return_value=57))
+
+    pipeline = LiveSessionPipeline(stream_id="test-total-laps-4", confirmed_roster=_SAMPLE_CONFIRMED_ROSTER)
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+    await _drain_background_tasks(pipeline)
+
+    assert pipeline.state.lap_count["TotalLaps"] == 57
+    pipeline_module.persist_total_laps.assert_awaited_once_with(9850, 57)
+
+
+@pytest.mark.asyncio
 async def test_driver_roster_fetch_only_triggered_once_per_session(monkeypatch: pytest.MonkeyPatch) -> None:
     fetch_roster = AsyncMock(return_value=[_SAMPLE_DRIVER])
     monkeypatch.setattr(pipeline_module, "fetch_driver_roster", fetch_roster)
@@ -360,3 +432,59 @@ def test_log_event_writes_non_message_entries(tmp_path: Path) -> None:
     content = archive_path.read_text()
     assert '"event_type": "connection"' in content
     assert '"status": "connected"' in content
+
+
+# ---- Battle Radar wire shape ----
+
+async def _advance_lap_with_gap(pipeline: LiveSessionPipeline, driver_number: int, lap_number: int, gap: str) -> None:
+    await pipeline.process_message(
+        "TimingData",
+        {"Lines": {str(driver_number): {"NumberOfLaps": lap_number, "Position": "2", "IntervalToPositionAhead": {"Value": gap}}}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_battle_radar_alert_included_in_timing_data_wire_when_it_fires() -> None:
+    pipeline = LiveSessionPipeline(stream_id="test-battle-radar-1")
+    _, queue = pipeline.subscribe()
+    queue.get_nowait()  # drain snapshot
+
+    await _advance_lap_with_gap(pipeline, 44, 1, "+2.500")
+    queue.get_nowait()  # first sighting - no advance yet, no sample recorded
+    await _advance_lap_with_gap(pipeline, 44, 2, "+1.800")
+    queue.get_nowait()  # records lap 1 = 1.8s - only one sample, no alert yet
+    await _advance_lap_with_gap(pipeline, 44, 3, "+1.100")  # records lap 2 = 1.1s, closing - fires "battle" tier
+
+    message = queue.get_nowait()
+    assert message["data"]["battle_radar"]["44"]["alert_level"] == "battle"
+    assert message["data"]["battle_radar"]["44"]["gap_seconds"] == pytest.approx(1.1)
+
+
+@pytest.mark.asyncio
+async def test_battle_radar_wire_carries_null_once_alert_clears() -> None:
+    pipeline = LiveSessionPipeline(stream_id="test-battle-radar-2")
+    _, queue = pipeline.subscribe()
+    queue.get_nowait()
+
+    await _advance_lap_with_gap(pipeline, 44, 1, "+2.500")
+    queue.get_nowait()
+    await _advance_lap_with_gap(pipeline, 44, 2, "+1.800")
+    queue.get_nowait()
+    await _advance_lap_with_gap(pipeline, 44, 3, "+1.100")
+    queue.get_nowait()  # alert now active
+
+    await _advance_lap_with_gap(pipeline, 44, 4, "+1.900")  # widened again - alert clears
+    message = queue.get_nowait()
+    assert message["data"]["battle_radar"]["44"] is None
+
+
+@pytest.mark.asyncio
+async def test_no_battle_radar_key_in_wire_when_no_lap_boundary_crossed() -> None:
+    pipeline = LiveSessionPipeline(stream_id="test-battle-radar-3")
+    _, queue = pipeline.subscribe()
+    queue.get_nowait()
+
+    # A TimingData message with no NumberOfLaps never touches battle radar at all.
+    await pipeline.process_message("TimingData", {"Lines": {"44": {"LastLapTime": {"Value": "1:27.150"}}}})
+    message = queue.get_nowait()
+    assert "battle_radar" not in message["data"]
