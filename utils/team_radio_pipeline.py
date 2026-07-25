@@ -93,7 +93,18 @@ async def process_radio_capture(
         driver_number=capture.driver_number,
         lap_number=capture.lap_number,
         ts=capture.utc,
+        capture_path=capture.path,
+        qualifying_part=capture.qualifying_part,
     )
+    if row_id is None:
+        # Already have a row for this exact capture (session_key, capture_path) - it was
+        # already downloaded/transcribed/analyzed by a previous run. SessionState._seen_radio_paths
+        # only dedupes within one process's lifetime, so this is the durable check that actually
+        # prevents re-running Whisper/Gemini on every re-simulation or backend restart.
+        logger.debug(
+            "Skipping already-processed team radio capture session_key=%s path=%s", session_key, capture.path
+        )
+        return
 
     local_path = local_audio_path(session_key, capture)
     try:

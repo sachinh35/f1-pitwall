@@ -17,7 +17,8 @@ from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
 from openf1_pydantic_models.f1_drivers import DriverInfo
 from openf1_pydantic_models.f1_sessions import F1Session
 from utils import live_session_pipeline as pipeline_module
-from utils.live_session_pipeline import LiveSessionPipeline
+from utils.live_session_pipeline import LiveSessionPipeline, diff_to_wire
+from utils.session_state import RadioCapture, SessionState, StateDiff
 
 _SAMPLE_CONFIRMED_ROSTER = [
     ConfirmedRosterEntry(driver_number=1, tla="NOR", full_name="Lando Norris", team_name="McLaren", team_colour="#F58020"),
@@ -620,3 +621,46 @@ async def test_no_battle_radar_key_in_wire_when_no_lap_boundary_crossed() -> Non
     await pipeline.process_message("TimingData", {"Lines": {"44": {"LastLapTime": {"Value": "1:27.150"}}}})
     message = queue.get_nowait()
     assert "battle_radar" not in message["data"]
+
+
+# ---- diff_to_wire: new_radio_captures carries qualifying_part through to the client ----
+
+def test_diff_to_wire_radio_capture_carries_qualifying_part_for_qualifying() -> None:
+    state = SessionState()
+    diff = StateDiff(
+        event_name="TeamRadio",
+        new_radio_captures=[
+            RadioCapture(
+                driver_number=1,
+                utc=datetime(2025, 11, 30, 16, 10, 50),
+                path="TeamRadio/x.mp3",
+                lap_number=8,
+                qualifying_part="Q2",
+            )
+        ],
+    )
+    wire = diff_to_wire(diff, state)
+    assert wire["new_radio_captures"][0]["qualifying_part"] == "Q2"
+    assert wire["new_radio_captures"][0]["lap_number"] == 8
+
+
+def test_diff_to_wire_radio_capture_qualifying_part_is_none_for_a_race() -> None:
+    """A race capture must never carry a stale/guessed qualifying segment - see
+    SessionState._apply_team_radio, which only ever sets qualifying_part from
+    self.qualifying_part (None outside qualifying)."""
+    state = SessionState()
+    diff = StateDiff(
+        event_name="TeamRadio",
+        new_radio_captures=[
+            RadioCapture(
+                driver_number=1,
+                utc=datetime(2025, 11, 30, 16, 10, 50),
+                path="TeamRadio/x.mp3",
+                lap_number=8,
+                qualifying_part=None,
+            )
+        ],
+    )
+    wire = diff_to_wire(diff, state)
+    assert wire["new_radio_captures"][0]["qualifying_part"] is None
+    assert wire["new_radio_captures"][0]["lap_number"] == 8

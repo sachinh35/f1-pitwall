@@ -143,6 +143,83 @@ async def test_happy_path_transitions_through_every_status_in_order(monkeypatch:
 
 
 @pytest.mark.asyncio
+async def test_insert_pending_receives_qualifying_part_from_the_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A race capture (RadioCapture.qualifying_part=None, the _make_capture() default) must
+    insert with qualifying_part=None; a qualifying capture must pass its segment through
+    unchanged - insert_pending must never guess or drop this field."""
+    received: dict = {}
+
+    async def fake_insert_pending(**kwargs) -> int:
+        received.update(kwargs)
+        return 42
+
+    async def fake_mark_downloading(row_id: int) -> None:
+        pass
+
+    async def fake_download_binary(url: str, dest: Path, headers=None) -> Path:
+        raise RuntimeError("stop after insert_pending - the rest of the pipeline isn't under test here")
+
+    monkeypatch.setattr(team_radio_pipeline.team_radio_db, "insert_pending", fake_insert_pending)
+    monkeypatch.setattr(team_radio_pipeline.team_radio_db, "mark_downloading", fake_mark_downloading)
+    monkeypatch.setattr(team_radio_pipeline.team_radio_db, "mark_failed_download", AsyncMock())
+    monkeypatch.setattr(team_radio_pipeline, "download_binary", fake_download_binary)
+
+    await team_radio_pipeline.process_radio_capture(session_key=9850, capture=_make_capture())
+    assert received["qualifying_part"] is None
+
+    qualifying_capture = RadioCapture(
+        driver_number=1,
+        utc=datetime(2025, 11, 30, 16, 10, 50),
+        path="TeamRadio/x.mp3",
+        lap_number=8,
+        qualifying_part="Q2",
+    )
+    await team_radio_pipeline.process_radio_capture(session_key=9850, capture=qualifying_capture)
+    assert received["qualifying_part"] == "Q2"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_capture_skips_download_transcription_and_analysis_entirely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """insert_pending returning None means this exact (session_key, capture_path) was already
+    processed by a previous run (see uq_team_radio_session_capture_path) - the whole point of
+    the fix is to never re-download/re-transcribe/re-analyze in that case, not just skip the
+    insert. A real bug this fixes: every re-simulation of the same archive used to re-run
+    Whisper and Gemini on every single capture from scratch."""
+    calls: list[str] = []
+
+    async def fake_insert_pending(**kwargs) -> None:
+        calls.append("insert_pending")
+        return None
+
+    monkeypatch.setattr(team_radio_pipeline.team_radio_db, "insert_pending", fake_insert_pending)
+    monkeypatch.setattr(team_radio_pipeline.team_radio_db, "mark_downloading", AsyncMock(side_effect=AssertionError))
+    monkeypatch.setattr(team_radio_pipeline, "download_binary", AsyncMock(side_effect=AssertionError))
+    monkeypatch.setattr(team_radio_pipeline.whisper_transcriber, "transcribe", AsyncMock(side_effect=AssertionError))
+    monkeypatch.setattr(team_radio_pipeline.radio_analysis, "analyze_transcript", AsyncMock(side_effect=AssertionError))
+
+    on_downloaded = AsyncMock()
+    on_transcribed = AsyncMock()
+    on_analyzed = AsyncMock()
+
+    # Must not raise - and must not touch any of the mocks above, each of which would
+    # raise AssertionError if the pipeline continued past the duplicate check.
+    await team_radio_pipeline.process_radio_capture(
+        session_key=9850,
+        capture=_make_capture(),
+        on_downloaded=on_downloaded,
+        on_transcribed=on_transcribed,
+        on_analyzed=on_analyzed,
+    )
+
+    assert calls == ["insert_pending"]
+    on_downloaded.assert_not_awaited()
+    on_transcribed.assert_not_awaited()
+    on_analyzed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_analysis_failure_never_regresses_an_already_successful_transcription(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

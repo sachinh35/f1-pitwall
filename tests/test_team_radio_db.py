@@ -32,10 +32,23 @@ def _mock_db(monkeypatch: pytest.MonkeyPatch, fetchval_result=None, fetch_result
 @pytest.mark.asyncio
 async def test_insert_pending_returns_new_row_id(monkeypatch: pytest.MonkeyPatch) -> None:
     mock_conn = _mock_db(monkeypatch, fetchval_result=42)
-    row_id = await team_radio_db.insert_pending(9850, 1, 12, datetime(2025, 11, 30, 16, 10, 50))
+    row_id = await team_radio_db.insert_pending(9850, 1, 12, datetime(2025, 11, 30, 16, 10, 50), "TeamRadio/x.mp3")
     assert row_id == 42
     args = mock_conn.fetchval.call_args.args
-    assert args[1:] == (9850, 1, 12, datetime(2025, 11, 30, 16, 10, 50), RadioClipStatus.PENDING.value)
+    assert args[1:] == (
+        9850, 1, 12, None, datetime(2025, 11, 30, 16, 10, 50), "TeamRadio/x.mp3", RadioClipStatus.PENDING.value,
+    )
+
+
+@pytest.mark.asyncio
+async def test_insert_pending_returns_none_on_a_duplicate_capture_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test: re-simulating/re-tailing the same archive must not re-download,
+    re-transcribe, or re-analyze a capture it already has a row for - ON CONFLICT (session_key,
+    capture_path) DO NOTHING RETURNING id returns no row (fetchval -> None) in that case, and the
+    caller (process_radio_capture) must treat None as "already processed, skip everything"."""
+    _mock_db(monkeypatch, fetchval_result=None)
+    row_id = await team_radio_db.insert_pending(9850, 1, 12, datetime(2025, 11, 30, 16, 10, 50), "TeamRadio/x.mp3")
+    assert row_id is None
 
 
 @pytest.mark.asyncio
@@ -46,11 +59,27 @@ async def test_insert_pending_normalizes_a_tz_aware_utc_to_naive(monkeypatch: py
     mock_conn = _mock_db(monkeypatch, fetchval_result=42)
     aware_ts = datetime(2025, 11, 30, 16, 10, 50, tzinfo=timezone.utc)
 
-    await team_radio_db.insert_pending(9850, 1, 12, aware_ts)
+    await team_radio_db.insert_pending(9850, 1, 12, aware_ts, "TeamRadio/x.mp3")
 
-    ts_arg = mock_conn.fetchval.call_args.args[4]
+    ts_arg = mock_conn.fetchval.call_args.args[5]
     assert ts_arg == datetime(2025, 11, 30, 16, 10, 50)
     assert ts_arg.tzinfo is None
+
+
+@pytest.mark.asyncio
+async def test_insert_pending_passes_qualifying_part_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regular-season race captures pass qualifying_part=None (see the RadioCapture default);
+    a qualifying capture passes the segment it was recorded in, e.g. "Q2"."""
+    mock_conn = _mock_db(monkeypatch, fetchval_result=42)
+
+    await team_radio_db.insert_pending(
+        9850, 1, 12, datetime(2025, 11, 30, 16, 10, 50), "TeamRadio/x.mp3", qualifying_part="Q2"
+    )
+
+    args = mock_conn.fetchval.call_args.args
+    assert args[1:] == (
+        9850, 1, 12, "Q2", datetime(2025, 11, 30, 16, 10, 50), "TeamRadio/x.mp3", RadioClipStatus.PENDING.value,
+    )
 
 
 @pytest.mark.asyncio
@@ -98,6 +127,7 @@ async def test_get_for_session_maps_rows_to_dataclasses(monkeypatch: pytest.Monk
     fake_rows = [
         {
             "id": 1, "session_key": 9850, "driver_number": 1, "lap_number": 12,
+            "qualifying_part": None,
             "ts": datetime(2025, 11, 30, 16, 10, 50), "audio_path": "9850/x.mp3",
             "transcript": "box box", "status": "done", "error": None,
             "transcribed_at": datetime(2025, 11, 30, 16, 10, 55),
@@ -108,11 +138,30 @@ async def test_get_for_session_maps_rows_to_dataclasses(monkeypatch: pytest.Monk
     clips = await team_radio_db.get_for_session(9850)
     assert len(clips) == 1
     assert clips[0].driver_number == 1
+    assert clips[0].lap_number == 12
+    assert clips[0].qualifying_part is None
     assert clips[0].status == RadioClipStatus.DONE
     assert clips[0].transcript == "box box"
     assert clips[0].speaker_role == "pit_wall"
     assert clips[0].is_notable is True
     assert clips[0].notable_reason == "Pit call."
+
+
+@pytest.mark.asyncio
+async def test_get_for_session_maps_qualifying_part_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_rows = [
+        {
+            "id": 3, "session_key": 9851, "driver_number": 1, "lap_number": 8,
+            "qualifying_part": "Q2",
+            "ts": datetime(2025, 11, 30, 16, 10, 50), "audio_path": "9851/x.mp3",
+            "transcript": "box box", "status": "done", "error": None,
+            "transcribed_at": datetime(2025, 11, 30, 16, 10, 55),
+            "speaker_role": None, "is_notable": None, "notable_reason": None,
+        }
+    ]
+    _mock_db(monkeypatch, fetch_result=fake_rows)
+    clips = await team_radio_db.get_for_session(9851)
+    assert clips[0].qualifying_part == "Q2"
 
 
 @pytest.mark.asyncio
@@ -122,6 +171,7 @@ async def test_get_for_session_defaults_analysis_fields_to_none_when_not_yet_ana
     fake_rows = [
         {
             "id": 2, "session_key": 9850, "driver_number": 1, "lap_number": 12,
+            "qualifying_part": None,
             "ts": datetime(2025, 11, 30, 16, 10, 50), "audio_path": "9850/x.mp3",
             "transcript": "box box", "status": "done", "error": None,
             "transcribed_at": datetime(2025, 11, 30, 16, 10, 55),

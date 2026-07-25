@@ -187,6 +187,28 @@ def test_team_radio_enriches_lap_number_from_reducer_state() -> None:
     assert diff.new_radio_captures[0].lap_number == 5
 
 
+def test_team_radio_qualifying_part_is_none_outside_qualifying() -> None:
+    """A race (or practice) session never sets SessionState.qualifying_part - a radio
+    capture during one must carry qualifying_part=None, not a stale/guessed segment."""
+    state = SessionState()
+    state.apply("SessionInfo", {"Type": "Race"})
+    state.apply("TimingData", {"Lines": {"1": {"NumberOfLaps": 5}}})
+
+    diff = state.apply("TeamRadio", FIXTURES["team_radio_list_form"])
+    assert diff.new_radio_captures[0].qualifying_part is None
+
+
+def test_team_radio_enriches_qualifying_part_during_qualifying() -> None:
+    """A capture during Q2 must carry qualifying_part="Q2" (see _apply_session_data's
+    QualifyingPart transition and _apply_session_info's Q1 default)."""
+    state = SessionState()
+    state.apply("SessionInfo", {"Type": "Qualifying"})  # defaults qualifying_part to "Q1"
+    state.apply("SessionData", {"Series": {"0": {"QualifyingPart": 2}}})  # Q1 -> Q2
+
+    diff = state.apply("TeamRadio", FIXTURES["team_radio_list_form"])
+    assert diff.new_radio_captures[0].qualifying_part == "Q2"
+
+
 # ---- Other topics: replace-style, Lines-style, append-only ----
 
 def test_weather_data_is_replace_style_per_key() -> None:

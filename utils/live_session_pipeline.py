@@ -99,6 +99,7 @@ def _radio_capture_to_wire(capture: RadioCapture) -> Dict[str, Any]:
     return {
         "driver_number": capture.driver_number,
         "lap_number": capture.lap_number,
+        "qualifying_part": capture.qualifying_part,
         "utc": capture.utc.isoformat(),
     }
 

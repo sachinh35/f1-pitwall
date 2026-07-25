@@ -31,11 +31,12 @@ class RadioClipStatus(str, Enum):
 
 class TeamRadioDB(BaseModel):
     """Mirrors the `team_radio` table (migrations/0004_weather_radio.sql,
-    extended by 0009_team_radio_analysis.sql)."""
+    extended by 0009_team_radio_analysis.sql and 0013_team_radio_qualifying_part.sql)."""
     id: Optional[int] = None
     session_key: int
     driver_number: int
     lap_number: Optional[int] = None
+    qualifying_part: Optional[str] = None
     ts: datetime
     audio_path: Optional[str] = None
     transcript: Optional[str] = None
@@ -55,8 +56,16 @@ async def insert_pending(
     driver_number: int,
     lap_number: Optional[int],
     ts: datetime,
-) -> int:
-    """Insert a new team_radio row in `pending` state, returning its id.
+    capture_path: str,
+    qualifying_part: Optional[str] = None,
+) -> Optional[int]:
+    """Insert a new team_radio row in `pending` state, returning its id - or None if this
+    exact capture (session_key, capture_path) already has a row, meaning it was already
+    downloaded/transcribed/analyzed by a previous run (see uq_team_radio_session_capture_path
+    - this was a real bug: without it, every re-simulation/re-tail of the same archive
+    re-ran the full pipeline, including Whisper and Gemini calls, for every capture from
+    scratch). The caller must skip the rest of its pipeline entirely on None, not just skip
+    the insert - see utils/team_radio_pipeline.py.
 
     `ts` comes from F1's raw TeamRadio.Captures[].Utc, parsed tz-aware (see
     session_state._parse_utc); `team_radio.ts` is a plain TIMESTAMP column, so this
@@ -67,11 +76,13 @@ async def insert_pending(
     async with DatabaseManager.get_connection() as conn:
         return await conn.fetchval(
             """
-            INSERT INTO team_radio (session_key, driver_number, lap_number, ts, status)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO team_radio (session_key, driver_number, lap_number, qualifying_part, ts, capture_path, status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (session_key, capture_path) DO NOTHING
             RETURNING id
             """,
-            session_key, driver_number, lap_number, normalize_datetime(ts), RadioClipStatus.PENDING.value,
+            session_key, driver_number, lap_number, qualifying_part,
+            normalize_datetime(ts), capture_path, RadioClipStatus.PENDING.value,
         )
 
 
@@ -132,8 +143,8 @@ async def get_for_session(session_key: int) -> List[TeamRadioDB]:
     async with DatabaseManager.get_connection() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, session_key, driver_number, lap_number, ts, audio_path, transcript, status, error,
-                   transcribed_at, speaker_role, is_notable, notable_reason
+            SELECT id, session_key, driver_number, lap_number, qualifying_part, ts, audio_path, transcript,
+                   status, error, transcribed_at, speaker_role, is_notable, notable_reason
             FROM team_radio
             WHERE session_key = $1
             ORDER BY ts
@@ -146,6 +157,7 @@ async def get_for_session(session_key: int) -> List[TeamRadioDB]:
                 session_key=row["session_key"],
                 driver_number=row["driver_number"],
                 lap_number=row["lap_number"],
+                qualifying_part=row["qualifying_part"],
                 ts=row["ts"],
                 audio_path=row["audio_path"],
                 transcript=row["transcript"],

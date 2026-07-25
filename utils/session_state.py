@@ -238,11 +238,13 @@ def parse_lap_time_to_seconds(value: Optional[str]) -> Optional[float]:
 
 @dataclass
 class RadioCapture:
-    """A newly-seen TeamRadio clip, enriched with the driver's current lap (not present in the raw message)."""
+    """A newly-seen TeamRadio clip, enriched with the driver's current lap and (during
+    qualifying) which segment it was captured in - neither present in the raw message."""
     driver_number: int
     utc: datetime
     path: str
     lap_number: Optional[int]
+    qualifying_part: Optional[str] = None
 
 
 @dataclass
@@ -824,6 +826,7 @@ class SessionState:
                     utc=_parse_utc(capture["Utc"]),
                     path=path,
                     lap_number=self.current_lap_for(driver_number),
+                    qualifying_part=self.qualifying_part,
                 )
             )
         return diff
