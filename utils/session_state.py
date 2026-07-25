@@ -212,6 +212,13 @@ class SessionState:
         # Append-only.
         self.race_control_messages: Dict[str, Any] = {}
 
+        # Set once per session, out-of-band from an OpenF1 fetch triggered
+        # when SessionInfo reveals this session's key - never comes from a
+        # SignalR message itself (DriverList only ever carries a grid "Line"
+        # number, no names/teams), so it isn't wired through the handler
+        # dispatch below.
+        self.driver_roster: Dict[int, Dict[str, Any]] = {}
+
         self._seen_radio_paths: Set[str] = set()
         self._current_lap_by_driver: Dict[int, int] = {}
         self._telemetry_buffers: Dict[int, TelemetrySampleBuffer] = {}
@@ -242,6 +249,11 @@ class SessionState:
             logger.debug("No handler for event_name=%s, ignoring", event_name)
             return StateDiff(event_name=event_name)
         return handler(payload)
+
+    def set_driver_roster(self, drivers: Dict[int, Dict[str, Any]]) -> None:
+        """Set once per session from an out-of-band OpenF1 fetch - see the comment on
+        self.driver_roster in __init__ for why this bypasses apply()/the handler dispatch."""
+        self.driver_roster = drivers
 
     def current_lap_for(self, driver_number: int) -> Optional[int]:
         """The driver's current lap number, or None if not yet known."""
@@ -286,6 +298,7 @@ class SessionState:
             "lap_count": self.lap_count,
             "extrapolated_clock": self.extrapolated_clock,
             "race_control_messages": self.race_control_messages,
+            "driver_roster": self.driver_roster,
         }
 
     # ---- per-topic handlers ----
@@ -414,8 +427,22 @@ class SessionState:
 
     def _apply_race_control(self, payload: Dict[str, Any]) -> StateDiff:
         """Race control messages are complete facts on arrival (each index is unique and never revisited) -
-        every entry in this payload is new and gets persisted immediately, not batched to a lap boundary."""
-        messages = payload.get("Messages", {})
+        every entry in this payload is new and gets persisted immediately, not batched to a lap boundary.
+
+        F1 sends this as a list (no index at all) on the very first RaceControlMessages event of a
+        session, and as a dict (index -> message) on every one after that - the same list-then-dict
+        quirk already handled on TeamRadio.Captures, confirmed here directly across three captured
+        sessions (always exactly one list-form event, always exactly one item, always first). List
+        entries get a synthetic non-positive string index (F1's own real indices always start at "1"
+        and count up), so it can never collide with a real one and still sorts as the oldest entry
+        wherever a caller does `Number(index)` and sorts descending (the frontend's race control feed).
+        """
+        raw_messages = payload.get("Messages", {})
+        if isinstance(raw_messages, list):
+            messages = {str(-i): message for i, message in enumerate(raw_messages)}
+        else:
+            messages = raw_messages
+
         deep_merge(self.race_control_messages, messages)
         new_entries = [{"index": index, **fields} for index, fields in messages.items()]
         return StateDiff(event_name="RaceControlMessages", new_race_control_entries=new_entries)

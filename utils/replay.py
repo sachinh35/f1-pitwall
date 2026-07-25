@@ -13,8 +13,9 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator, Optional, Tuple
+from typing import Any, Iterator, List, Optional, Tuple
 
+from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
 from utils.live_session_pipeline import LiveSessionPipeline, register_pipeline, unregister_pipeline
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,11 @@ async def replay_log_file(
     return message_count
 
 
-def start_replay(log_path: Path, speed_factor: float = DEFAULT_SPEED_FACTOR) -> str:
+def start_replay(
+    log_path: Path,
+    speed_factor: float = DEFAULT_SPEED_FACTOR,
+    confirmed_roster: Optional[List[ConfirmedRosterEntry]] = None,
+) -> str:
     """
     Start replaying `log_path` in the background against a fresh,
     registered LiveSessionPipeline. Returns the new session's stream_id
@@ -104,7 +109,9 @@ def start_replay(log_path: Path, speed_factor: float = DEFAULT_SPEED_FACTOR) -> 
         raise FileNotFoundError(f"Replay log file not found: {log_path}")
 
     stream_id = f"simulation_{int(datetime.now().timestamp())}"
-    pipeline = LiveSessionPipeline(stream_id=stream_id, archive_path=None)  # replaying an existing archive - don't write a new one
+    pipeline = LiveSessionPipeline(
+        stream_id=stream_id, archive_path=None, confirmed_roster=confirmed_roster
+    )  # replaying an existing archive - don't write a new one
     register_pipeline(pipeline)
 
     async def _run() -> None:

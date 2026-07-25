@@ -19,9 +19,19 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Coroutine, Dict, Optional, Set, Tuple
+from typing import Any, Coroutine, Dict, List, Optional, Set, Tuple
 
-from utils.live_persistence import persist_completed_lap, persist_race_control_entry, persist_weather_snapshot
+from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
+from openf1_pydantic_models.f1_drivers import DriverInfo
+from utils.live_persistence import (
+    persist_completed_lap,
+    persist_confirmed_driver_roster,
+    persist_driver_roster,
+    persist_race_control_entry,
+    persist_session_metadata,
+    persist_weather_snapshot,
+)
+from utils.session_metadata import fetch_driver_roster, fetch_session_metadata
 from utils.session_state import CompletedLap, RadioCapture, SessionState, StateDiff
 from utils.team_radio_pipeline import process_radio_capture
 
@@ -71,6 +81,38 @@ def _radio_capture_to_wire(capture: RadioCapture) -> Dict[str, Any]:
     }
 
 
+def _driver_info_to_wire(driver: DriverInfo) -> Dict[str, Any]:
+    return {
+        "driver_number": driver.driver_number,
+        "broadcast_name": driver.broadcast_name,
+        "full_name": driver.full_name,
+        "name_acronym": driver.name_acronym,
+        "team_name": driver.team_name,
+        "team_colour": driver.team_colour,
+        "first_name": driver.first_name,
+        "last_name": driver.last_name,
+        "headshot_url": driver.headshot_url,
+        "country_code": driver.country_code,
+    }
+
+
+def _confirmed_entry_to_wire(entry: ConfirmedRosterEntry) -> Dict[str, Any]:
+    """Same wire shape as _driver_info_to_wire, minus the OpenF1-only fields a manually-confirmed
+    entry never has (broadcast_name, first/last name, headshot, country) - left None."""
+    return {
+        "driver_number": entry.driver_number,
+        "broadcast_name": None,
+        "full_name": entry.full_name,
+        "name_acronym": entry.tla,
+        "team_name": entry.team_name,
+        "team_colour": entry.team_colour,
+        "first_name": None,
+        "last_name": None,
+        "headshot_url": None,
+        "country_code": None,
+    }
+
+
 def diff_to_wire(diff: StateDiff, state: SessionState) -> Dict[str, Any]:
     """
     Convert an internal StateDiff into the JSON payload sent over SSE: the
@@ -115,7 +157,12 @@ class LiveSessionPipeline:
     for this stream_id.
     """
 
-    def __init__(self, stream_id: str, archive_path: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        stream_id: str,
+        archive_path: Optional[Path] = None,
+        confirmed_roster: Optional[List[ConfirmedRosterEntry]] = None,
+    ) -> None:
         self.stream_id = stream_id
         self.state = SessionState()
         self._subscribers: Dict[int, "asyncio.Queue[Dict[str, Any]]"] = {}
@@ -124,6 +171,17 @@ class LiveSessionPipeline:
         self._archive_file = open(archive_path, "a", encoding="utf-8") if archive_path else None
         self._background_tasks: Set[asyncio.Task] = set()
         self._messages_since_flush: int = 0
+        self._session_meta_fetch_started: bool = False
+
+        # A user-confirmed pre-race lineup, if the caller supplied one, is known
+        # immediately - no need to wait on SessionInfo/an OpenF1 fetch for the
+        # roster itself (only for session metadata, which still comes from
+        # OpenF1). See ConfirmedRosterEntry for why this exists.
+        self._confirmed_roster: Optional[List[ConfirmedRosterEntry]] = confirmed_roster
+        if confirmed_roster is not None:
+            self.state.set_driver_roster(
+                {entry.driver_number: _confirmed_entry_to_wire(entry) for entry in confirmed_roster}
+            )
 
     def subscribe(self) -> Tuple[int, "asyncio.Queue[Dict[str, Any]]"]:
         """Register a new SSE client. Caller must call unsubscribe() when the connection closes."""
@@ -209,6 +267,10 @@ class LiveSessionPipeline:
 
         await self._broadcast(event_name, diff_to_wire(diff, self.state))
 
+        if event_name == "SessionInfo" and not self._session_meta_fetch_started and self.state.session_key is not None:
+            self._session_meta_fetch_started = True
+            self._spawn(self._fetch_and_broadcast_session_meta())
+
         for completed_lap in diff.completed_laps:
             self._spawn(self._persist_completed_lap(completed_lap))
 
@@ -242,6 +304,59 @@ class LiveSessionPipeline:
             logger.exception(
                 "Failed to persist completed lap driver=%s lap=%s", lap.driver_number, lap.lap_number
             )
+
+    async def _fetch_and_broadcast_session_meta(self) -> None:
+        """One-shot, triggered the first time SessionInfo reveals this session's key: fetch its
+        circuit/location/date/type from OpenF1 and persist it.
+
+        The driver roster is handled differently depending on whether the caller supplied a
+        confirmed_roster upfront: if so, it's already set on self.state (from __init__, before any
+        subscriber could have connected) and just needs persisting now that session_key is known - the
+        OpenF1 roster fetch is skipped entirely, since it can't be trusted for a genuinely live session
+        anyway (see ConfirmedRosterEntry). Otherwise, fall back to the OpenF1-backed fetch/broadcast
+        this always did (correct for replays of already-historical sessions - see session_metadata.py).
+        """
+        session_key = self.state.session_key
+        if session_key is None:
+            return
+
+        if self._confirmed_roster is not None:
+            session_meta = await fetch_session_metadata(session_key)
+            if session_meta is not None:
+                try:
+                    await persist_session_metadata(session_meta)
+                except Exception:
+                    logger.exception("Failed to persist session metadata for session_key=%s", session_key)
+            try:
+                await persist_confirmed_driver_roster(session_key, self._confirmed_roster)
+            except Exception:
+                logger.exception("Failed to persist confirmed driver roster for session_key=%s", session_key)
+            return
+
+        session_meta, drivers = await asyncio.gather(
+            fetch_session_metadata(session_key), fetch_driver_roster(session_key)
+        )
+
+        if session_meta is not None:
+            try:
+                await persist_session_metadata(session_meta)
+            except Exception:
+                logger.exception("Failed to persist session metadata for session_key=%s", session_key)
+
+        if not drivers:
+            logger.warning("OpenF1 returned no driver roster for session_key=%s", session_key)
+            return
+
+        try:
+            await persist_driver_roster(session_key, drivers)
+        except Exception:
+            logger.exception("Failed to persist driver roster for session_key=%s", session_key)
+
+        roster_by_number = {driver.driver_number: _driver_info_to_wire(driver) for driver in drivers}
+        self.state.set_driver_roster(roster_by_number)
+        await self._broadcast(
+            "driver_roster", {"driver_roster": {str(k): v for k, v in roster_by_number.items()}}
+        )
 
     async def _broadcast_radio_event(self, event_name: str, row_id: int) -> None:
         """Forward team_radio_pipeline's on_downloaded/on_transcribed callbacks onto this session's SSE

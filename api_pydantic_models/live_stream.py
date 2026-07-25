@@ -4,6 +4,7 @@ Pydantic models for live streaming API requests and responses.
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
+from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
 from utils.team_radio_db import TeamRadioDB
 
 
@@ -12,6 +13,9 @@ class StartStreamRequest(BaseModel):
     access_token: Optional[str] = Field(None, description="F1 TV Pro access token for authentication (optional if saved token exists)")
     refresh_token: Optional[str] = Field(None, description="F1 TV Pro refresh token (optional)")
     cookies: Optional[str] = Field(None, description="F1 TV Pro session cookies (optional)")
+    confirmed_roster: Optional[List[ConfirmedRosterEntry]] = Field(
+        None, description="User-confirmed pre-race lineup - see ConfirmedRosterEntry"
+    )
 
 
 class AuthenticateRequest(BaseModel):
@@ -47,6 +51,23 @@ class SimulateStreamRequest(BaseModel):
         gt=0,
         description="Playback speed multiplier - the real gaps between messages, scaled down by this factor",
     )
+    confirmed_roster: Optional[List[ConfirmedRosterEntry]] = Field(
+        None, description="User-confirmed pre-race lineup - see ConfirmedRosterEntry"
+    )
+
+
+class TeamDriverPoolEntry(BaseModel):
+    """One driver in a team's known season pool (race-seat or reserve) - see /team-driver-pool."""
+    team_name: str
+    driver_number: Optional[int] = None
+    tla: Optional[str] = None
+    full_name: str
+    is_reserve: bool
+
+
+class GetTeamDriverPoolResponse(BaseModel):
+    season_year: int
+    drivers: List[TeamDriverPoolEntry]
 
 
 class GetTeamRadioResponse(BaseModel):

@@ -18,6 +18,7 @@ from api_pydantic_models.lap_data import GetSessionLapDataResponse, LapDataReque
 from api_pydantic_models.live_stream import (
     AuthenticateRequest,
     AuthenticateResponse,
+    GetTeamDriverPoolResponse,
     GetTeamRadioResponse,
     SimulateStreamRequest,
     StartStreamRequest,
@@ -31,7 +32,10 @@ from utils import f1_auth, lap_data, lap_telemetry_db, live_stream, race_control
 from utils.database import DatabaseManager
 from utils.lap_comparison import build_lap_trace, compute_delta_trace
 from utils.live_session_pipeline import get_pipeline
+from utils.team_driver_pool_db import get_team_driver_pool
 from utils.team_radio_pipeline import AUDIO_CACHE_DIR
+
+CURRENT_SEASON_YEAR: int = 2026
 
 logging.basicConfig(
     level=logging.INFO,
@@ -199,6 +203,21 @@ async def authenticate_f1tv(request: AuthenticateRequest) -> AuthenticateRespons
         )
 
 
+@app.get("/team-driver-pool", response_model=GetTeamDriverPoolResponse)
+async def get_team_driver_pool_endpoint(season_year: int = CURRENT_SEASON_YEAR) -> GetTeamDriverPoolResponse:
+    """
+    The known per-team driver pool (race-seat and reserve/development drivers) for a season -
+    used to pre-fill and validate the pre-race lineup confirmation step before a live stream
+    starts (see ConfirmedRosterEntry for why that step exists).
+    """
+    try:
+        drivers = await get_team_driver_pool(season_year)
+        return GetTeamDriverPoolResponse(season_year=season_year, drivers=drivers)
+    except Exception as e:
+        logging.exception("Error fetching team driver pool for season_year=%s", season_year)
+        raise HTTPException(status_code=500, detail=f"Failed to fetch team driver pool: {str(e)}")
+
+
 @app.post("/start-live-stream", response_model=StartStreamResponse)
 async def start_live_stream(request: StartStreamRequest) -> StartStreamResponse:
     """
@@ -229,7 +248,8 @@ async def start_live_stream(request: StartStreamRequest) -> StartStreamResponse:
         streamer = live_stream.start_stream(
             access_token=token,
             refresh_token=request.refresh_token,
-            cookies=request.cookies
+            cookies=request.cookies,
+            confirmed_roster=request.confirmed_roster,
         )
 
         stream_info = streamer.get_stream_info()
@@ -267,7 +287,9 @@ async def simulate_live_stream(request: SimulateStreamRequest = SimulateStreamRe
     """
     log_path = Path("stream_logs") / request.log_file
     try:
-        stream_id = replay.start_replay(log_path, speed_factor=request.speed_factor)
+        stream_id = replay.start_replay(
+            log_path, speed_factor=request.speed_factor, confirmed_roster=request.confirmed_roster
+        )
         logging.info("Started replay stream_id=%s log_file=%s speed_factor=%s", stream_id, log_path, request.speed_factor)
         return StartStreamResponse(
             success=True,

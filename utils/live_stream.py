@@ -15,11 +15,12 @@ import logging
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 from signalrcore.hub_connection_builder import HubConnectionBuilder
 
+from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
 from utils.live_session_pipeline import LiveSessionPipeline, get_pipeline, register_pipeline, unregister_pipeline
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ class F1SignalRStreamer:
         refresh_token: Optional[str] = None,
         cookies: Optional[str] = None,
         loop: Optional[asyncio.AbstractEventLoop] = None,
+        confirmed_roster: Optional[List[ConfirmedRosterEntry]] = None,
     ) -> None:
         self.access_token = access_token
         self.refresh_token = refresh_token
@@ -76,7 +78,9 @@ class F1SignalRStreamer:
         self._setup_log_directory()
         self.log_file_path: Path = self._log_file_path()
 
-        self.pipeline = LiveSessionPipeline(stream_id=self.stream_id, archive_path=self.log_file_path)
+        self.pipeline = LiveSessionPipeline(
+            stream_id=self.stream_id, archive_path=self.log_file_path, confirmed_roster=confirmed_roster
+        )
         register_pipeline(self.pipeline)
 
     def _setup_log_directory(self) -> None:
@@ -341,14 +345,19 @@ class F1SignalRStreamer:
 _active_streams: Dict[str, F1SignalRStreamer] = {}
 
 
-def start_stream(access_token: str, refresh_token: Optional[str] = None, cookies: Optional[str] = None) -> F1SignalRStreamer:
+def start_stream(
+    access_token: str,
+    refresh_token: Optional[str] = None,
+    cookies: Optional[str] = None,
+    confirmed_roster: Optional[List[ConfirmedRosterEntry]] = None,
+) -> F1SignalRStreamer:
     """Start a new live F1 SignalR stream in a background thread."""
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
 
-    streamer = F1SignalRStreamer(access_token, refresh_token, cookies, loop=loop)
+    streamer = F1SignalRStreamer(access_token, refresh_token, cookies, loop=loop, confirmed_roster=confirmed_roster)
     _active_streams[streamer.stream_id] = streamer
 
     thread = threading.Thread(target=streamer.run, daemon=True)

@@ -193,12 +193,59 @@ def test_race_control_diff_empty_when_no_messages_key() -> None:
     assert diff.new_race_control_entries == []
 
 
+def test_race_control_handles_list_form_on_first_message() -> None:
+    """F1 sends Messages as a bare list (no index) on the very first RaceControlMessages event of a
+    session, and as a dict afterwards - confirmed directly in three captured logs."""
+    state = SessionState()
+    diff = state.apply(
+        "RaceControlMessages",
+        {"Messages": [{"Utc": "2025-11-29T17:59:32", "Category": "Other", "Message": "PIT LANE INCIDENT"}]},
+    )
+    assert diff.new_race_control_entries == [
+        {"index": "0", "Utc": "2025-11-29T17:59:32", "Category": "Other", "Message": "PIT LANE INCIDENT"}
+    ]
+    assert state.race_control_messages == {
+        "0": {"Utc": "2025-11-29T17:59:32", "Category": "Other", "Message": "PIT LANE INCIDENT"}
+    }
+
+
+def test_race_control_list_form_synthetic_index_sorts_before_real_dict_indices() -> None:
+    """The frontend's race control feed does Number(index) and sorts descending (newest first) - the
+    synthetic index for a list-form message must parse as a number lower than any real F1 index, so
+    that oldest-first ordering (list-form message is always the session's very first) stays correct."""
+    state = SessionState()
+    state.apply("RaceControlMessages", {"Messages": [{"Message": "first ever message"}]})
+    state.apply("RaceControlMessages", {"Messages": {"1": {"Message": "second message"}}})
+
+    indices_newest_first = sorted((int(i) for i in state.race_control_messages), reverse=True)
+    assert indices_newest_first == [1, 0]
+
+
+def test_race_control_list_form_with_multiple_items_gets_distinct_indices() -> None:
+    state = SessionState()
+    diff = state.apply(
+        "RaceControlMessages",
+        {"Messages": [{"Message": "first"}, {"Message": "second"}]},
+    )
+    assert diff.new_race_control_entries == [
+        {"index": "0", "Message": "first"},
+        {"index": "-1", "Message": "second"},
+    ]
+
+
 def test_snapshot_returns_full_current_state() -> None:
     state = SessionState(session_key=9850)
     state.apply("WeatherData", {"AirTemp": "25.1"})
     snap = state.snapshot()
     assert snap["session_key"] == 9850
     assert snap["weather"] == {"AirTemp": "25.1"}
+    assert snap["driver_roster"] == {}
+
+
+def test_set_driver_roster_is_reflected_in_snapshot() -> None:
+    state = SessionState()
+    state.set_driver_roster({1: {"full_name": "Max Verstappen", "name_acronym": "VER"}})
+    assert state.snapshot()["driver_roster"] == {1: {"full_name": "Max Verstappen", "name_acronym": "VER"}}
 
 
 def test_unknown_topic_does_not_raise() -> None:

@@ -13,8 +13,48 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
+from openf1_pydantic_models.f1_drivers import DriverInfo
+from openf1_pydantic_models.f1_sessions import F1Session
 from utils import live_session_pipeline as pipeline_module
 from utils.live_session_pipeline import LiveSessionPipeline
+
+_SAMPLE_CONFIRMED_ROSTER = [
+    ConfirmedRosterEntry(driver_number=1, tla="NOR", full_name="Lando Norris", team_name="McLaren", team_colour="#F58020"),
+    ConfirmedRosterEntry(driver_number=81, tla="OWA", full_name="Pato O'Ward", team_name="McLaren", team_colour="#F58020"),
+]
+
+_SAMPLE_DRIVER = DriverInfo(
+    meeting_key=1275,
+    session_key=9850,
+    driver_number=1,
+    broadcast_name="M VERSTAPPEN",
+    full_name="Max Verstappen",
+    name_acronym="VER",
+    team_name="Red Bull Racing",
+    team_colour="3671C6",
+    first_name="Max",
+    last_name="Verstappen",
+    headshot_url="https://example.com/ver.png",
+    country_code="NED",
+)
+
+_SAMPLE_SESSION_META = F1Session(
+    circuit_key=63,
+    circuit_short_name="Losail",
+    country_code="QAT",
+    country_key=10,
+    country_name="Qatar",
+    date_end=datetime(2025, 11, 30, 18, 0, 0),
+    date_start=datetime(2025, 11, 30, 16, 0, 0),
+    gmt_offset="03:00:00",
+    location="Lusail",
+    meeting_key=1275,
+    session_key=9850,
+    session_name="Race",
+    session_type="Race",
+    year=2025,
+)
 
 
 async def _drain_background_tasks(pipeline: LiveSessionPipeline) -> None:
@@ -25,11 +65,21 @@ async def _drain_background_tasks(pipeline: LiveSessionPipeline) -> None:
 
 @pytest.fixture(autouse=True)
 def _mock_persistence(monkeypatch: pytest.MonkeyPatch):
-    """Every test gets fresh, no-op mocks for everything process_message can spawn."""
+    """Every test gets fresh, no-op mocks for everything process_message can spawn.
+
+    fetch_session_metadata/fetch_driver_roster default to "nothing found" (None / empty list) so
+    SessionInfo-triggered tests never make a real OpenF1 network call; tests that care about the
+    roster-fetch/broadcast path override these explicitly.
+    """
     monkeypatch.setattr(pipeline_module, "persist_completed_lap", AsyncMock())
     monkeypatch.setattr(pipeline_module, "persist_weather_snapshot", AsyncMock())
     monkeypatch.setattr(pipeline_module, "persist_race_control_entry", AsyncMock())
     monkeypatch.setattr(pipeline_module, "process_radio_capture", AsyncMock())
+    monkeypatch.setattr(pipeline_module, "persist_session_metadata", AsyncMock())
+    monkeypatch.setattr(pipeline_module, "persist_driver_roster", AsyncMock())
+    monkeypatch.setattr(pipeline_module, "persist_confirmed_driver_roster", AsyncMock())
+    monkeypatch.setattr(pipeline_module, "fetch_session_metadata", AsyncMock(return_value=None))
+    monkeypatch.setattr(pipeline_module, "fetch_driver_roster", AsyncMock(return_value=[]))
 
 
 def test_subscribe_delivers_initial_snapshot() -> None:
@@ -148,6 +198,148 @@ async def test_weather_and_race_control_persist_immediately_not_on_lap_boundary(
     await _drain_background_tasks(pipeline)
     pipeline_module.persist_weather_snapshot.assert_awaited_once()
     pipeline_module.persist_race_control_entry.assert_awaited_once()
+
+
+# ---- SessionInfo-triggered driver roster / session metadata fetch ----
+
+@pytest.mark.asyncio
+async def test_session_info_fetches_persists_and_broadcasts_driver_roster(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pipeline_module, "fetch_session_metadata", AsyncMock(return_value=_SAMPLE_SESSION_META))
+    monkeypatch.setattr(pipeline_module, "fetch_driver_roster", AsyncMock(return_value=[_SAMPLE_DRIVER]))
+
+    pipeline = LiveSessionPipeline(stream_id="test-roster-1")
+    _, queue = pipeline.subscribe()
+    queue.get_nowait()  # drain initial snapshot
+
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+    queue.get_nowait()  # drain the SessionInfo broadcast itself
+    await _drain_background_tasks(pipeline)
+
+    pipeline_module.persist_session_metadata.assert_awaited_once_with(_SAMPLE_SESSION_META)
+    pipeline_module.persist_driver_roster.assert_awaited_once()
+    assert pipeline_module.persist_driver_roster.call_args.args[0] == 9850
+
+    assert pipeline.state.driver_roster[1]["full_name"] == "Max Verstappen"
+
+    message = queue.get_nowait()
+    assert message["event"] == "driver_roster"
+    assert message["data"]["driver_roster"]["1"]["name_acronym"] == "VER"
+    assert message["data"]["driver_roster"]["1"]["team_colour"] == "3671C6"
+
+
+@pytest.mark.asyncio
+async def test_driver_roster_fetch_only_triggered_once_per_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    fetch_roster = AsyncMock(return_value=[_SAMPLE_DRIVER])
+    monkeypatch.setattr(pipeline_module, "fetch_driver_roster", fetch_roster)
+
+    pipeline = LiveSessionPipeline(stream_id="test-roster-2")
+    await pipeline.process_message("SessionInfo", {"Key": 9850})
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+    await _drain_background_tasks(pipeline)
+
+    fetch_roster.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_driver_roster_fetch_not_triggered_when_session_key_still_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetch_roster = AsyncMock(return_value=[_SAMPLE_DRIVER])
+    monkeypatch.setattr(pipeline_module, "fetch_driver_roster", fetch_roster)
+
+    pipeline = LiveSessionPipeline(stream_id="test-roster-3")
+    # A SessionInfo payload with no "Key" leaves state.session_key as None.
+    await pipeline.process_message("SessionInfo", {"Meeting": {"Key": 1275}})
+    await _drain_background_tasks(pipeline)
+
+    fetch_roster.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_driver_roster_broadcast_skipped_when_openf1_returns_no_drivers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pipeline_module, "fetch_driver_roster", AsyncMock(return_value=[]))
+
+    pipeline = LiveSessionPipeline(stream_id="test-roster-4")
+    _, queue = pipeline.subscribe()
+    queue.get_nowait()  # drain initial snapshot
+
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+    queue.get_nowait()  # drain the SessionInfo broadcast itself
+    await _drain_background_tasks(pipeline)
+
+    pipeline_module.persist_driver_roster.assert_not_awaited()
+    assert queue.empty()  # no driver_roster event broadcast
+    assert pipeline.state.driver_roster == {}
+
+
+# ---- confirmed_roster (pre-race lineup confirmation) ----
+
+def test_confirmed_roster_is_set_immediately_on_construction() -> None:
+    """No need to wait on SessionInfo/OpenF1 - the caller already told us who's driving."""
+    pipeline = LiveSessionPipeline(stream_id="test-confirmed-1", confirmed_roster=_SAMPLE_CONFIRMED_ROSTER)
+
+    assert pipeline.state.driver_roster[1]["full_name"] == "Lando Norris"
+    assert pipeline.state.driver_roster[1]["name_acronym"] == "NOR"
+    assert pipeline.state.driver_roster[1]["team_colour"] == "#F58020"
+    assert pipeline.state.driver_roster[81]["full_name"] == "Pato O'Ward"
+
+
+def test_subscribe_snapshot_includes_confirmed_roster_before_any_message_processed() -> None:
+    pipeline = LiveSessionPipeline(stream_id="test-confirmed-2", confirmed_roster=_SAMPLE_CONFIRMED_ROSTER)
+    _, queue = pipeline.subscribe()
+    message = queue.get_nowait()
+    assert message["data"]["driver_roster"][1]["name_acronym"] == "NOR"
+
+
+@pytest.mark.asyncio
+async def test_session_info_persists_confirmed_roster_and_skips_openf1_driver_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetch_roster = AsyncMock(return_value=[_SAMPLE_DRIVER])
+    monkeypatch.setattr(pipeline_module, "fetch_driver_roster", fetch_roster)
+    monkeypatch.setattr(pipeline_module, "fetch_session_metadata", AsyncMock(return_value=_SAMPLE_SESSION_META))
+
+    pipeline = LiveSessionPipeline(stream_id="test-confirmed-3", confirmed_roster=_SAMPLE_CONFIRMED_ROSTER)
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+    await _drain_background_tasks(pipeline)
+
+    # Session metadata (circuit/date/etc.) is still fetched from OpenF1 - only the roster is skipped.
+    pipeline_module.persist_session_metadata.assert_awaited_once_with(_SAMPLE_SESSION_META)
+    fetch_roster.assert_not_awaited()
+    pipeline_module.persist_driver_roster.assert_not_awaited()
+
+    pipeline_module.persist_confirmed_driver_roster.assert_awaited_once_with(9850, _SAMPLE_CONFIRMED_ROSTER)
+    # The confirmed roster (set at construction) is untouched by the OpenF1-fetch path.
+    assert pipeline.state.driver_roster[1]["full_name"] == "Lando Norris"
+
+
+@pytest.mark.asyncio
+async def test_session_info_does_not_rebroadcast_driver_roster_when_confirmed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The confirmed roster is already in the first snapshot every subscriber gets (from __init__) -
+    no separate "driver_roster" event is needed/sent once SessionInfo arrives."""
+    pipeline = LiveSessionPipeline(stream_id="test-confirmed-4", confirmed_roster=_SAMPLE_CONFIRMED_ROSTER)
+    _, queue = pipeline.subscribe()
+    queue.get_nowait()  # drain initial snapshot
+
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+    queue.get_nowait()  # drain the SessionInfo broadcast itself
+    await _drain_background_tasks(pipeline)
+
+    assert queue.empty()
+
+
+def test_no_confirmed_roster_falls_back_to_default_empty_state() -> None:
+    """Backward compatibility: omitting confirmed_roster (curl calls, existing tests) behaves exactly
+    as before - state.driver_roster starts empty and the OpenF1-fetch path is used."""
+    pipeline = LiveSessionPipeline(stream_id="test-confirmed-5")
+    assert pipeline.state.driver_roster == {}
+    assert pipeline._confirmed_roster is None
 
 
 def test_close_closes_archive_file(tmp_path: Path) -> None:

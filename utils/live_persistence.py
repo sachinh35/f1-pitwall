@@ -11,9 +11,12 @@ task, never on the live broadcast's critical path.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
-from typing import Any, Dict, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
+from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
+from openf1_pydantic_models.f1_drivers import DriverInfo
+from openf1_pydantic_models.f1_sessions import F1Session
 from utils.database import DatabaseManager
 from utils.session_state import CompletedLap
 
@@ -162,3 +165,93 @@ async def persist_race_control_entry(session_key: int, meeting_key: Optional[int
             driver_number,
             entry.get("Flag"),
         )
+
+
+def _to_naive_utc(value: datetime) -> datetime:
+    """OpenF1 returns timezone-aware timestamps; `sessions.date_start`/`date_end` are plain
+    TIMESTAMP (no tz) columns, and asyncpg's timestamp codec rejects an aware datetime outright."""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+async def persist_session_metadata(session: F1Session) -> None:
+    """Upsert this session's circuit/location/date/type into `sessions` - fetched once from OpenF1
+    the moment SessionInfo reveals a session_key, since the live feed itself never carries it."""
+    async with DatabaseManager.get_connection() as conn:
+        await conn.execute(
+            """
+            INSERT INTO sessions (
+                session_key, meeting_key, session_name, session_type, circuit_key, circuit_short_name,
+                country_code, country_name, location, date_start, date_end, gmt_offset, year
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            ON CONFLICT (session_key) DO UPDATE SET
+                meeting_key = EXCLUDED.meeting_key,
+                session_name = EXCLUDED.session_name,
+                session_type = EXCLUDED.session_type,
+                circuit_key = EXCLUDED.circuit_key,
+                circuit_short_name = EXCLUDED.circuit_short_name,
+                country_code = EXCLUDED.country_code,
+                country_name = EXCLUDED.country_name,
+                location = EXCLUDED.location,
+                date_start = EXCLUDED.date_start,
+                date_end = EXCLUDED.date_end,
+                gmt_offset = EXCLUDED.gmt_offset,
+                year = EXCLUDED.year
+            """,
+            session.session_key, session.meeting_key, session.session_name, session.session_type,
+            session.circuit_key, session.circuit_short_name, session.country_code, session.country_name,
+            session.location, _to_naive_utc(session.date_start), _to_naive_utc(session.date_end),
+            session.gmt_offset, session.year,
+        )
+    logger.info("Persisted session metadata session_key=%s location=%s", session.session_key, session.location)
+
+
+async def persist_driver_roster(session_key: int, drivers: List[DriverInfo]) -> None:
+    """Upsert the driver roster actually entered for this session into `driver_roster`."""
+    async with DatabaseManager.get_connection() as conn:
+        async with conn.transaction():
+            for driver in drivers:
+                await conn.execute(
+                    """
+                    INSERT INTO driver_roster (
+                        session_key, driver_number, broadcast_name, full_name, name_acronym,
+                        team_name, team_colour, first_name, last_name, headshot_url, country_code
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    ON CONFLICT (session_key, driver_number) DO UPDATE SET
+                        broadcast_name = EXCLUDED.broadcast_name,
+                        full_name = EXCLUDED.full_name,
+                        name_acronym = EXCLUDED.name_acronym,
+                        team_name = EXCLUDED.team_name,
+                        team_colour = EXCLUDED.team_colour,
+                        first_name = EXCLUDED.first_name,
+                        last_name = EXCLUDED.last_name,
+                        headshot_url = EXCLUDED.headshot_url,
+                        country_code = EXCLUDED.country_code
+                    """,
+                    session_key, driver.driver_number, driver.broadcast_name, driver.full_name,
+                    driver.name_acronym, driver.team_name, driver.team_colour, driver.first_name,
+                    driver.last_name, driver.headshot_url, driver.country_code,
+                )
+    logger.info("Persisted driver roster session_key=%s count=%d", session_key, len(drivers))
+
+
+async def persist_confirmed_driver_roster(session_key: int, entries: List[ConfirmedRosterEntry]) -> None:
+    """Upsert a user-confirmed pre-race lineup into `driver_roster` - the same table the OpenF1-backed
+    fetch writes to, just without the extra OpenF1-only fields (broadcast_name, headshot_url, etc.),
+    which stay NULL here since a manually-confirmed entry never has them."""
+    async with DatabaseManager.get_connection() as conn:
+        async with conn.transaction():
+            for entry in entries:
+                await conn.execute(
+                    """
+                    INSERT INTO driver_roster (session_key, driver_number, full_name, name_acronym, team_name)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (session_key, driver_number) DO UPDATE SET
+                        full_name = EXCLUDED.full_name,
+                        name_acronym = EXCLUDED.name_acronym,
+                        team_name = EXCLUDED.team_name
+                    """,
+                    session_key, entry.driver_number, entry.full_name, entry.tla, entry.team_name,
+                )
+    logger.info("Persisted confirmed driver roster session_key=%s count=%d", session_key, len(entries))
