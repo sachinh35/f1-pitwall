@@ -317,7 +317,7 @@ class F1SignalRStreamer:
         try:
             for method in ("Subscribe", "SubscribeToTiming", "SubscribeToLiveTiming"):
                 try:
-                    self.connection.send(method, [F1_TOPICS])
+                    self.connection.send(method, [F1_TOPICS], on_invocation=self._handle_subscribe_result)
                     logger.info(f"Subscribed to {method} with topics")
                     self.sink.log_event("subscription", {"method": method, "topics": F1_TOPICS})
                     break
@@ -329,6 +329,48 @@ class F1SignalRStreamer:
             logger.error(error_msg)
             self.sink.log_event("error", {"error": error_msg, "type": "subscription_error"})
             logger.warning("Continuing without explicit subscription - events may still be received")
+
+    def _handle_subscribe_result(self, completion_message: Any) -> None:
+        """
+        signalrcore invokes on_invocation with a single CompletionMessage (not a list -
+        the library's own type hint says List[CompletionMessage], but base_hub_connection's
+        __on_completion_message calls handler.complete_callback(message) with just the one
+        message; confirmed live, the list form raised TypeError: 'CompletionMessage' object
+        is not iterable on the very first real Subscribe response).
+
+        F1's `Subscribe` RPC call returns the full current state (one value per subscribed
+        topic, e.g. {"LapCount": {"CurrentLap": 1, ...}, "TimingAppData": {...}, ...}) as
+        its *invocation result* - entirely separate from the ongoing "feed" push messages
+        on_feed_message handles. Previously dropped completely: send() was called without
+        on_invocation, so every connect/reconnect started SessionState genuinely empty,
+        rebuilt only from whatever incremental diffs happened to arrive afterward.
+
+        For a high-frequency topic (TimingData changes every few hundred ms) that
+        self-heals almost instantly and goes unnoticed. For a low-frequency one it doesn't:
+        confirmed against two separate real captures (this session's live race and an
+        older Qatar race capture) that F1 never re-sends LapCount's *current* value as a
+        fresh diff, only the *next* one - so a client that missed the initial snapshot
+        shows nothing until a full lap has elapsed, and would display "2" as the very
+        first value it ever sees instead of "1". The same gap silently drops each driver's
+        starting tyre compound (TimingAppData.Stints) until their first pit stop.
+
+        Feeding each topic's initial value through the exact same handle_message() path a
+        live diff uses seeds the reducer correctly immediately, with no changes needed to
+        SessionState's handlers - a full initial value merges into empty state exactly
+        the way a real diff would (deep_merge/Lines-merge are idempotent either way).
+        """
+        result = getattr(completion_message, "result", None)
+        if not isinstance(result, dict):
+            if getattr(completion_message, "error", None):
+                logger.warning(f"Subscribe invocation returned an error: {completion_message.error}")
+            else:
+                logger.warning(f"Subscribe invocation result was not a topic dict: {type(result)!r}")
+            return
+        logger.info(f"Received initial state snapshot for {len(result)} topics from Subscribe result: {sorted(result.keys())}")
+        for topic, value in result.items():
+            if value is None:
+                continue
+            self._handle_message_async(topic, value)
 
     def stop(self) -> None:
         """Signal run()'s reconnect loop to stop retrying and shut down for good - the only

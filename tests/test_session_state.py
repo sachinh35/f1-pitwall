@@ -1,12 +1,12 @@
 """Unit tests for utils/session_state.py, grounded in real captured payloads where possible."""
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict
 
 import pytest
 
-from utils.session_state import SessionState, _parse_gap_seconds, deep_merge, parse_lap_time_to_seconds
+from utils.session_state import SessionState, parse_gap_seconds, deep_merge, parse_lap_time_to_seconds
 
 FIXTURES = json.loads((Path(__file__).parent / "fixtures" / "real_stream_samples.json").read_text())
 
@@ -34,6 +34,34 @@ def test_deep_merge_replaces_when_types_diverge() -> None:
     base = {"GapToLeader": {"stale": "shape"}}
     deep_merge(base, {"GapToLeader": "+0.200"})
     assert base == {"GapToLeader": "+0.200"}
+
+
+def test_deep_merge_indexes_a_list_before_merging_a_dict_diff_into_it() -> None:
+    """Regression test: F1 sends TimingAppData.Stints as a plain array in a full-state
+    snapshot but as an index-keyed dict in incremental diffs - confirmed live, merging a
+    dict diff straight into the existing array (without normalizing it first) hit the
+    "not both dicts" branch and replaced the whole array, silently discarding Compound
+    (and everything else only ever sent once, in the array form)."""
+    base = {
+        "Stints": [
+            {"Compound": "MEDIUM", "New": "true", "TotalLaps": 6},
+        ]
+    }
+    deep_merge(base, {"Stints": {"0": {"TotalLaps": 7}}})
+    assert base == {
+        "Stints": {
+            "0": {"Compound": "MEDIUM", "New": "true", "TotalLaps": 7},
+        }
+    }
+
+
+def test_deep_merge_leaves_a_list_alone_when_the_update_is_also_a_list() -> None:
+    """The list->dict normalization must only trigger when the incoming update is itself
+    a dict (the incremental-diff form) - a list replacing a list is a normal, correct
+    full replace and must not be reinterpreted as an indexed collection."""
+    base = {"Sectors": [1, 2, 3]}
+    deep_merge(base, {"Sectors": [4, 5]})
+    assert base == {"Sectors": [4, 5]}
 
 
 # ---- parse_lap_time_to_seconds ----
@@ -303,6 +331,7 @@ def test_snapshot_returns_full_current_state() -> None:
     assert snap["session_key"] == 9850
     assert snap["weather"] == {"AirTemp": "25.1"}
     assert snap["driver_roster"] == {}
+    assert snap["tyre_strategy_predictions"] == {}
 
 
 def test_set_driver_roster_is_reflected_in_snapshot() -> None:
@@ -402,14 +431,39 @@ def test_position_topic_buffers_samples_for_every_driver_seen() -> None:
     assert len(state._buffer_for(some_driver).x) > 0
 
 
-# ---- Battle Radar: _parse_gap_seconds ----
+# ---- TopThree: full-snapshot "Lines" arrives as a list, not a dict ----
+
+def test_top_three_handles_a_list_shaped_lines_from_the_initial_snapshot() -> None:
+    """Regression test: TopThree's full-state snapshot (Subscribe RPC's initial-state
+    result) sends "Lines" as a plain 3-entry array, not the index-keyed dict incremental
+    diffs use - confirmed live, this crashed with AttributeError: 'list' object has no
+    attribute 'items' the first time an initial snapshot ever reached this handler."""
+    state = SessionState()
+    diff = state.apply(
+        "TopThree",
+        {"Lines": [{"RacingNumber": "81", "Tla": "PIA"}, {"RacingNumber": "1", "Tla": "NOR"}]},
+    )
+    assert diff.changed_driver_numbers == [1, 2]
+    assert state.top_three[1]["Tla"] == "PIA"
+    assert state.top_three[2]["Tla"] == "NOR"
+
+
+def test_top_three_still_handles_the_normal_dict_shaped_lines_diff() -> None:
+    state = SessionState()
+    state.apply("TopThree", {"Lines": [{"RacingNumber": "81", "Tla": "PIA"}]})
+    diff = state.apply("TopThree", {"Lines": {"1": {"DiffToLeader": "+0.166"}}})
+    assert diff.changed_driver_numbers == [1]
+    assert state.top_three[1] == {"RacingNumber": "81", "Tla": "PIA", "DiffToLeader": "+0.166"}
+
+
+# ---- Battle Radar: parse_gap_seconds ----
 
 @pytest.mark.parametrize(
     "value,expected",
     [("+0.880", 0.880), ("+1.234", 1.234), ("0.500", 0.5), ("1L", None), (None, None), ("", None)],
 )
 def test_parse_gap_seconds(value, expected) -> None:
-    result = _parse_gap_seconds(value)
+    result = parse_gap_seconds(value)
     if expected is None:
         assert result is None
     else:
@@ -430,24 +484,27 @@ def _advance_with_gap(state: SessionState, driver_number: int, lap_number: int, 
 
 
 def test_battle_radar_no_alert_with_only_one_gap_sample() -> None:
+    """Live sampling (see _record_live_gap_sample) records a sample from the very first
+    IntervalToPositionAhead-bearing message, not just once a lap actually completes - so
+    exactly one message means exactly one sample, never enough for a trend on its own."""
     state = SessionState()
-    _advance_with_gap(state, 44, 1, "2", "+2.500")  # first sighting, no advance yet
-    _advance_with_gap(state, 44, 2, "2", "+1.100")  # lap 1 completes, records exactly one sample
+    _advance_with_gap(state, 44, 1, "2", "+2.500")
     assert 44 not in state.battle_radar
 
 
 def test_battle_radar_fires_battle_tier_after_two_closing_laps() -> None:
     state = SessionState()
-    _advance_with_gap(state, 44, 1, "2", "+2.500")
-    _advance_with_gap(state, 44, 2, "2", "+1.800")  # records lap 1 = 1.8s
-    _advance_with_gap(state, 44, 3, "2", "+1.100")  # records lap 2 = 1.1s, decreasing -> gaining
+    _advance_with_gap(state, 44, 1, "2", "+2.500")  # first sample: lap 1 = 2.5s
+    _advance_with_gap(state, 44, 2, "2", "+1.800")  # lap 2 = 1.8s
+    _advance_with_gap(state, 44, 3, "2", "+1.100")  # lap 3 = 1.1s, decreasing -> gaining
 
     alert = state.battle_radar[44]
     assert alert["alert_level"] == "battle"
     assert alert["gap_seconds"] == pytest.approx(1.1)
     assert alert["lap_history"] == [
-        {"lap_number": 1, "gap_seconds": pytest.approx(1.8)},
-        {"lap_number": 2, "gap_seconds": pytest.approx(1.1)},
+        {"lap_number": 1, "gap_seconds": pytest.approx(2.5)},
+        {"lap_number": 2, "gap_seconds": pytest.approx(1.8)},
+        {"lap_number": 3, "gap_seconds": pytest.approx(1.1)},
     ]
 
 
@@ -516,9 +573,10 @@ def test_battle_radar_lap_history_capped_at_five_samples() -> None:
     gaps = ["+3.000", "+2.800", "+2.600", "+2.400", "+2.200", "+2.000", "+1.800"]
     for lap_number, gap in enumerate(gaps, start=1):
         _advance_with_gap(state, 44, lap_number, "2", gap)
-    # 7 laps announced -> 6 gap samples recorded (first message only initializes NumberOfLaps).
+    # 7 messages -> 7 live gap samples (every message with a gap value samples now, not
+    # just lap-boundary ones) - the oldest 2 are evicted, keeping laps 3-7.
     assert len(state.battle_radar[44]["lap_history"]) == 5
-    assert state.battle_radar[44]["lap_history"][0]["lap_number"] == 2  # oldest sample evicted
+    assert state.battle_radar[44]["lap_history"][0]["lap_number"] == 3  # oldest sample evicted
 
 
 def test_battle_radar_touched_reported_on_diff_and_reflected_in_snapshot() -> None:
@@ -529,6 +587,95 @@ def test_battle_radar_touched_reported_on_diff_and_reflected_in_snapshot() -> No
     )
     assert diff.battle_radar_touched == [44]
     assert state.snapshot()["battle_radar"] == state.battle_radar
+
+
+# ---- Battle Radar: live (not lap-boundary) sampling + real-event-time throttling ----
+#
+# Confirmed live during an actual race: sampling only at lap boundaries (once every
+# ~80-90s) meant a closing trend was only ever confirmed a full lap after it started - by
+# the time it was confirmed, the overtake attempt it should have warned about had often
+# already happened. Battle Radar now samples on every live IntervalToPositionAhead update,
+# throttled by real *event* time (not wall-clock, so a fast-forward replay throttles
+# correctly by race time elapsed, not by how fast it's processed) rather than gated on a
+# lap actually completing.
+
+def _gap_update(driver_number: int, position: str, gap_value: str) -> Dict:
+    return {"Lines": {str(driver_number): {"Position": position, "IntervalToPositionAhead": {"Value": gap_value}}}}
+
+
+def test_live_gap_sample_fires_mid_lap_without_a_lap_boundary() -> None:
+    """The core fix: two closing readings on the SAME lap (no NumberOfLaps change at all
+    between them) must be able to fire an alert - this could never happen under the old
+    lap-boundary-only sampling."""
+    state = SessionState()
+    t0 = datetime(2026, 7, 26, 15, 0, 0)
+    state.apply("TimingData", _gap_update(44, "2", "+2.500"), event_time=t0)
+    state.apply("TimingData", _gap_update(44, "2", "+1.100"), event_time=t0 + timedelta(seconds=10))
+
+    alert = state.battle_radar[44]
+    assert alert["alert_level"] == "battle"
+    assert alert["gap_seconds"] == pytest.approx(1.1)
+
+
+def test_live_gap_sample_is_throttled_within_the_interval() -> None:
+    """A second reading arriving before _LIVE_GAP_SAMPLE_INTERVAL_SECONDS has elapsed (in
+    event time) must not be recorded - this is what keeps the trend check from flickering
+    on ordinary measurement noise between consecutive ticks."""
+    state = SessionState()
+    t0 = datetime(2026, 7, 26, 15, 0, 0)
+    state.apply("TimingData", _gap_update(44, "2", "+2.500"), event_time=t0)
+    diff = state.apply("TimingData", _gap_update(44, "2", "+1.100"), event_time=t0 + timedelta(seconds=1))
+
+    assert diff.battle_radar_touched == []
+    assert 44 not in state.battle_radar  # only one sample was ever actually recorded
+
+
+def test_live_gap_sample_records_again_once_the_interval_has_elapsed() -> None:
+    state = SessionState()
+    t0 = datetime(2026, 7, 26, 15, 0, 0)
+    state.apply("TimingData", _gap_update(44, "2", "+2.500"), event_time=t0)
+    state.apply("TimingData", _gap_update(44, "2", "+1.100"), event_time=t0 + timedelta(seconds=1))  # throttled
+    diff = state.apply(
+        "TimingData", _gap_update(44, "2", "+0.900"), event_time=t0 + timedelta(seconds=5)
+    )  # interval elapsed since t0's sample
+
+    assert diff.battle_radar_touched == [44]
+    assert state.battle_radar[44]["gap_seconds"] == pytest.approx(0.9)
+
+
+def test_live_gap_sample_tags_current_in_progress_lap_not_the_completed_one() -> None:
+    """Unlike _record_gap_sample's completed-lap invariant, a live sample is tagged with
+    whatever lap the driver is currently on - several samples can legitimately share one
+    lap_number if multiple ticks land within it before the next boundary."""
+    state = SessionState()
+    t0 = datetime(2026, 7, 26, 15, 0, 0)
+    state.apply("TimingData", {"Lines": {"44": {"NumberOfLaps": 5}}}, event_time=t0)  # first sighting
+    diff = state.apply("TimingData", _gap_update(44, "2", "+1.500"), event_time=t0 + timedelta(seconds=1))
+
+    assert diff.battle_radar_touched == [44]
+    history = state._gap_history[44]
+    assert history[-1] == (5, pytest.approx(1.5))
+
+
+def test_completed_lap_gap_to_ahead_is_independent_of_live_sampling_throttle() -> None:
+    """CompletedLap.gap_to_ahead_seconds (persisted per completed lap) must reflect the
+    lap-boundary message's own value even when the live Battle Radar sampler is currently
+    throttled - the two are decoupled (_current_gap_to_ahead is a pure read, not gated by
+    _LIVE_GAP_SAMPLE_INTERVAL_SECONDS)."""
+    state = SessionState()
+    t0 = datetime(2026, 7, 26, 15, 0, 0)
+    state.apply("TimingData", {"Lines": {"44": {"NumberOfLaps": 1}}}, event_time=t0)
+    state.apply("TimingData", _gap_update(44, "2", "+2.000"), event_time=t0 + timedelta(milliseconds=100))
+
+    # Lap boundary arrives well within the throttle window of the sample just above.
+    diff = state.apply(
+        "TimingData",
+        {"Lines": {"44": {"NumberOfLaps": 2, "IntervalToPositionAhead": {"Value": "+0.750"}}}},
+        event_time=t0 + timedelta(milliseconds=200),
+    )
+
+    completed = next(lap for lap in diff.completed_laps if lap.driver_number == 44)
+    assert completed.gap_to_ahead_seconds == pytest.approx(0.750)
 
 
 # ---- qualifying_part (SessionData.Series -> QualifyingPart) ----
@@ -782,6 +929,95 @@ def test_non_finalised_session_status_does_not_snapshot() -> None:
     state.apply("SessionData", {"Series": {"1": {"QualifyingPart": 1}}})
     diff = state.apply("SessionStatus", {"Status": "Started"})
     assert diff.qualifying_part_results == []
+
+
+# ---- SessionStatus "Started": formation lap telemetry flush (race/sprint only) ----
+#
+# F1 never assigns TimingData.NumberOfLaps to the formation lap - confirmed against real
+# captured race data, it's simply absent until a driver completes the first real racing
+# lap, at which point it appears already at 1 (never 0). Without an explicit flush at the
+# green flag, all the grid/formation-lap CarData.z/Position.z samples silently carry over
+# into lap 1's buffer and pollute its aggregates with formation-lap pace.
+
+def test_session_status_started_during_race_flushes_buffered_telemetry_as_lap_zero() -> None:
+    state = SessionState()
+    state.apply("SessionInfo", {"Type": "Race"})
+    state.apply("CarData.z", FIXTURES["car_data_raw_payload"])
+    some_driver = next(iter(state._telemetry_buffers))
+    assert len(state._buffer_for(some_driver).speed) > 0
+
+    diff = state.apply("SessionStatus", {"Status": "Started"})
+
+    formation_lap = next(lap for lap in diff.completed_laps if lap.driver_number == some_driver)
+    assert formation_lap.lap_number == 0
+    assert formation_lap.lap_duration_seconds is None
+    assert formation_lap.gap_to_ahead_seconds is None
+    assert formation_lap.qualifying_part is None
+    # Buffer must be reset afterward, or lap 1 would inherit these same formation-lap samples.
+    assert state._buffer_for(some_driver).speed == []
+
+
+def test_session_status_started_is_a_no_op_outside_race_and_sprint_sessions() -> None:
+    """Regression test: qualifying genuinely sends SessionStatus "Started" too (once per
+    segment, confirmed against a real captured quali session) - this must never flush a
+    driver's in-progress out-lap telemetry as a bogus "formation lap"."""
+    state = SessionState()
+    state.apply("SessionInfo", {"Type": "Qualifying"})
+    state.apply("CarData.z", FIXTURES["car_data_raw_payload"])
+    some_driver = next(iter(state._telemetry_buffers))
+
+    diff = state.apply("SessionStatus", {"Status": "Started"})
+
+    assert diff.completed_laps == []
+    assert len(state._buffer_for(some_driver).speed) > 0  # untouched
+
+
+def test_session_status_started_produces_no_record_for_a_driver_with_nothing_buffered() -> None:
+    state = SessionState()
+    state.apply("SessionInfo", {"Type": "Race"})
+    diff = state.apply("SessionStatus", {"Status": "Started"})
+    assert diff.completed_laps == []
+
+
+def test_session_status_started_only_flushes_once() -> None:
+    state = SessionState()
+    state.apply("SessionInfo", {"Type": "Race"})
+    state.apply("CarData.z", FIXTURES["car_data_raw_payload"])
+
+    diff = state.apply("SessionStatus", {"Status": "Started"})
+    assert len(diff.completed_laps) > 0
+
+    state.apply("CarData.z", FIXTURES["car_data_raw_payload"])
+    diff2 = state.apply("SessionStatus", {"Status": "Started"})
+    assert diff2.completed_laps == []
+
+
+def test_formation_lap_flush_does_not_pollute_the_next_real_completed_lap() -> None:
+    """End-to-end: formation-lap samples must never reach lap 1's persisted telemetry."""
+    state = SessionState()
+    state.apply("SessionInfo", {"Type": "Race"})
+
+    # Formation lap: three samples buffered before the green flag.
+    for _ in range(3):
+        state._buffer_for(81).add_car_sample(
+            utc=datetime(2026, 7, 26, 14, 0, 0), rpm=10000, speed_kmh=60, gear=2,
+            throttle_pct=30, brake_pct=0, drs=0,
+        )
+    state.apply("SessionStatus", {"Status": "Started"})
+    assert state._buffer_for(81).speed == []  # flushed clean
+
+    # Lap 1: two samples buffered after the green flag, at real racing pace.
+    for _ in range(2):
+        state._buffer_for(81).add_car_sample(
+            utc=datetime(2026, 7, 26, 14, 1, 0), rpm=11500, speed_kmh=310, gear=8,
+            throttle_pct=100, brake_pct=0, drs=1,
+        )
+    state.apply("TimingData", {"Lines": {"81": {"NumberOfLaps": 1}}})  # first sighting, no-op
+    diff = state.apply("TimingData", {"Lines": {"81": {"NumberOfLaps": 2}}})  # lap 1 completes
+
+    lap_one = next(lap for lap in diff.completed_laps if lap.driver_number == 81)
+    assert lap_one.lap_number == 1
+    assert lap_one.telemetry.speed == [310, 310]  # only the post-green-flag samples
 
 
 def test_completed_lap_tagged_with_current_qualifying_part() -> None:

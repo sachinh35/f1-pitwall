@@ -78,6 +78,7 @@ def _mock_persistence(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(pipeline_module, "mark_lap_deleted", AsyncMock())
     monkeypatch.setattr(pipeline_module, "persist_qualifying_results", AsyncMock())
     monkeypatch.setattr(pipeline_module, "process_radio_capture", AsyncMock())
+    monkeypatch.setattr(pipeline_module, "predict_tyre_strategy", AsyncMock())
     monkeypatch.setattr(pipeline_module, "persist_session_metadata", AsyncMock())
     monkeypatch.setattr(pipeline_module, "persist_driver_roster", AsyncMock())
     monkeypatch.setattr(pipeline_module, "persist_confirmed_driver_roster", AsyncMock())
@@ -181,6 +182,136 @@ async def test_completed_lap_persist_skipped_when_session_key_unknown() -> None:
 
     await _drain_background_tasks(pipeline)
     pipeline_module.persist_completed_lap.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_completed_lap_triggers_tyre_strategy_prediction_in_race_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    from utils.tyre_strategy_prediction import PredictedStint, TyreStrategyPrediction
+
+    prediction = TyreStrategyPrediction(
+        predicted_stints=[PredictedStint(stint_number=1, compound="hard", predicted_total_laps=30)],
+        safety_car_note="Low SC risk historically at this circuit.",
+        summary="Expected to run hards to the finish.",
+    )
+    monkeypatch.setattr(pipeline_module, "predict_tyre_strategy", AsyncMock(return_value=prediction))
+
+    pipeline = LiveSessionPipeline(stream_id="test-tyre-strategy-1")
+    _, queue = pipeline.subscribe()
+    queue.get_nowait()  # drain initial snapshot
+
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Type": "Race", "Meeting": {"Key": 1275}})
+    queue.get_nowait()  # drain SessionInfo broadcast
+
+    await pipeline.process_message("TimingData", {"Lines": {"1": {"Position": "1", "NumberOfLaps": 1}}})
+    queue.get_nowait()
+    await pipeline.process_message(
+        "TimingData", {"Lines": {"1": {"NumberOfLaps": 2, "LastLapTime": {"Value": "1:27.150"}}}}
+    )
+    queue.get_nowait()  # drain the TimingData broadcast itself
+
+    await _drain_background_tasks(pipeline)
+
+    pipeline_module.predict_tyre_strategy.assert_awaited_once()
+    context = pipeline_module.predict_tyre_strategy.call_args.args[0]
+    assert context.driver_number == 1
+
+    assert pipeline.state.tyre_strategy_predictions[1]["summary"] == "Expected to run hards to the finish."
+    assert pipeline.state.tyre_strategy_predictions[1]["generated_at_lap"] == 1
+    assert pipeline.state.tyre_strategy_predictions[1]["predicted_stints"] == [
+        {"stint_number": 1, "compound": "hard", "predicted_total_laps": 30}
+    ]
+
+    message = queue.get_nowait()
+    assert message["event"] == "TYRE_STRATEGY_PREDICTION"
+    assert message["data"]["driver_number"] == 1
+    assert message["data"]["prediction"]["summary"] == "Expected to run hards to the finish."
+
+
+@pytest.mark.asyncio
+async def test_completed_lap_does_not_trigger_tyre_strategy_prediction_in_qualifying() -> None:
+    pipeline = LiveSessionPipeline(stream_id="test-tyre-strategy-2")
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Type": "Qualifying", "Meeting": {"Key": 1275}})
+
+    await pipeline.process_message("TimingData", {"Lines": {"1": {"Position": "1", "NumberOfLaps": 1}}})
+    await pipeline.process_message(
+        "TimingData", {"Lines": {"1": {"NumberOfLaps": 2, "LastLapTime": {"Value": "1:27.150"}}}}
+    )
+
+    await _drain_background_tasks(pipeline)
+    pipeline_module.predict_tyre_strategy.assert_not_awaited()
+    assert pipeline.state.tyre_strategy_predictions == {}
+
+
+@pytest.mark.asyncio
+async def test_formation_lap_does_not_trigger_tyre_strategy_prediction() -> None:
+    pipeline = LiveSessionPipeline(stream_id="test-tyre-strategy-3")
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Type": "Race", "Meeting": {"Key": 1275}})
+    pipeline.state._buffer_for(1).add_car_sample(
+        utc=datetime(2025, 1, 1), rpm=11000, speed_kmh=300, gear=8, throttle_pct=100, brake_pct=0, drs=12,
+    )
+
+    # SessionStatus "Started" on a Race produces a lap_number=0 formation-lap CompletedLap
+    # (see SessionState._capture_formation_lap) - must not trigger a strategy prediction.
+    await pipeline.process_message("SessionStatus", {"Status": "Started"})
+
+    await _drain_background_tasks(pipeline)
+    pipeline_module.predict_tyre_strategy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tyre_strategy_prediction_failure_is_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        pipeline_module, "predict_tyre_strategy", AsyncMock(side_effect=RuntimeError("Gemini quota exceeded"))
+    )
+    pipeline = LiveSessionPipeline(stream_id="test-tyre-strategy-4")
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Type": "Race", "Meeting": {"Key": 1275}})
+
+    await pipeline.process_message("TimingData", {"Lines": {"1": {"Position": "1", "NumberOfLaps": 1}}})
+    await pipeline.process_message(
+        "TimingData", {"Lines": {"1": {"NumberOfLaps": 2, "LastLapTime": {"Value": "1:27.150"}}}}
+    )
+
+    await _drain_background_tasks(pipeline)  # must not raise
+    assert pipeline.state.tyre_strategy_predictions == {}
+
+
+@pytest.mark.asyncio
+async def test_stale_tyre_strategy_prediction_is_skipped_once_the_race_has_moved_on() -> None:
+    """Regression test: re-attaching to an in-progress race replays the whole archive from
+    lap 1 before catching up to "now", queuing one prediction per driver per historical lap
+    behind the rate limiter (see tyre_strategy_prediction._throttle). Confirmed live: without
+    this check, the queue ground through history at ~1 call/4.5s instead of ever reflecting
+    the real, current lap. A request for a lap far behind the session's current lap by the
+    time it's about to run must be skipped, not computed."""
+    pipeline = LiveSessionPipeline(stream_id="test-tyre-strategy-stale")
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Type": "Race", "Meeting": {"Key": 1275}})
+
+    # Driver 1 completes lap 1 (NumberOfLaps 1 -> 2)...
+    await pipeline.process_message("TimingData", {"Lines": {"1": {"Position": "1", "NumberOfLaps": 1}}})
+    await pipeline.process_message(
+        "TimingData", {"Lines": {"1": {"NumberOfLaps": 2, "LastLapTime": {"Value": "1:27.150"}}}}
+    )
+    # ...but by the time the queued/rate-limited prediction task actually runs, the race has
+    # already moved on well past that lap (a fast catch-up replay outrunning the throttled queue).
+    await pipeline.process_message("LapCount", {"CurrentLap": 40})
+
+    await _drain_background_tasks(pipeline)
+    pipeline_module.predict_tyre_strategy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tyre_strategy_prediction_still_runs_when_only_slightly_behind_current_lap() -> None:
+    pipeline = LiveSessionPipeline(stream_id="test-tyre-strategy-fresh")
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Type": "Race", "Meeting": {"Key": 1275}})
+
+    await pipeline.process_message("TimingData", {"Lines": {"1": {"Position": "1", "NumberOfLaps": 1}}})
+    await pipeline.process_message(
+        "TimingData", {"Lines": {"1": {"NumberOfLaps": 2, "LastLapTime": {"Value": "1:27.150"}}}}
+    )
+    await pipeline.process_message("LapCount", {"CurrentLap": 2})  # only 1 lap behind - still fresh
+
+    await _drain_background_tasks(pipeline)
+    pipeline_module.predict_tyre_strategy.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -583,10 +714,10 @@ async def test_battle_radar_alert_included_in_timing_data_wire_when_it_fires() -
     queue.get_nowait()  # drain snapshot
 
     await _advance_lap_with_gap(pipeline, 44, 1, "+2.500")
-    queue.get_nowait()  # first sighting - no advance yet, no sample recorded
+    queue.get_nowait()  # first message - one live gap sample recorded, not enough for a trend yet
     await _advance_lap_with_gap(pipeline, 44, 2, "+1.800")
-    queue.get_nowait()  # records lap 1 = 1.8s - only one sample, no alert yet
-    await _advance_lap_with_gap(pipeline, 44, 3, "+1.100")  # records lap 2 = 1.1s, closing - fires "battle" tier
+    queue.get_nowait()  # two samples, decreasing - already "upcoming" tier, not asserted here
+    await _advance_lap_with_gap(pipeline, 44, 3, "+1.100")  # three samples, still closing - fires "battle" tier
 
     message = queue.get_nowait()
     assert message["data"]["battle_radar"]["44"]["alert_level"] == "battle"

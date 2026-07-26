@@ -21,7 +21,7 @@ import logging
 import re
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 
 from utils.telemetry_decoder import (
@@ -56,14 +56,26 @@ _DELETED_LAP_RE = re.compile(r"CAR (\d+) \([A-Z]{2,4}\)\s+(?:TIME [\d:.]+ DELETE
 # many remain (this season's 22-car grid: Q1 22->16, Q2 16->10, leaving 10 for Q3, matching
 # real F1 rules), so the same constant applies at both the Q1->Q2 and Q2->Q3 transitions.
 QUALIFYING_ELIMINATION_COUNT = 6
-# How many of a driver's most recent completed-lap gap samples are kept -
-# enough for the hover trend graph (5) while trend detection itself only
-# ever looks at the most recent 3.
+# How many of a driver's most recent gap samples are kept - enough for the hover trend
+# graph (5) while trend detection itself only ever looks at the most recent 3.
 _GAP_HISTORY_MAXLEN = 5
 _TREND_WINDOW = 3
+# Minimum gap - in real *event* time (F1's own message timestamps, not wall-clock; see
+# SessionState._current_event_time) - between live gap samples for the SAME driver
+# (race-only: IntervalToPositionAhead is never sent during qualifying, confirmed earlier
+# - see _apply_timing_data). Sampling only at lap boundaries (once every ~80-90s) meant a
+# closing trend was only ever confirmed a full lap after it started, by which point the
+# overtake attempt it should have warned about had often already happened or passed -
+# confirmed live (Hamilton closing to 0.427s on Verstappen mid-lap never surfaced an
+# alert). This throttle is deliberately time-based, not "every TimingData message" (which
+# arrives multiple times a second) - sampling that fast made the strictly-monotonic trend
+# check flicker on ordinary measurement noise between consecutive ticks. Event time
+# (not wall-clock) so a fast-forward replay/catch-up throttles correctly by how much
+# *race* time elapsed between readings, not by how fast we happened to process them.
+_LIVE_GAP_SAMPLE_INTERVAL_SECONDS = 4.0
 
 
-def _parse_gap_seconds(value: Optional[str]) -> Optional[float]:
+def parse_gap_seconds(value: Optional[str]) -> Optional[float]:
     """
     Parse an IntervalToPositionAhead.Value string ("+0.880") into seconds.
     Returns None rather than raising for values that aren't a plain gap -
@@ -89,10 +101,23 @@ def deep_merge(base: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
     reused for every per-topic merge below (TimingData, TimingAppData,
     TopThree, DriverList, TrackStatus, WeatherData, ...) instead of writing
     bespoke merge logic per topic.
+
+    One documented exception: F1 sends some indexed collections (confirmed for
+    TimingAppData.Stints) as a plain JSON array in a full-state snapshot (e.g. the
+    Subscribe RPC's initial-state result - see F1SignalRStreamer._handle_subscribe_result)
+    but as an index-keyed dict ("0" -> first stint, etc.) in incremental diffs. Without
+    handling this, a dict-diff arriving after the array form hit the "not both dicts"
+    branch and replaced the whole array wholesale - confirmed live, this silently
+    discarded Compound (and everything else only ever sent once, in the array form) the
+    moment any later diff touched so much as one field of the same collection.
     """
     for key, value in update.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            deep_merge(base[key], value)
+        existing = base.get(key)
+        if isinstance(value, dict) and isinstance(existing, list):
+            existing = {str(i): item for i, item in enumerate(existing)}
+        if isinstance(value, dict) and isinstance(existing, dict):
+            deep_merge(existing, value)
+            base[key] = existing
         else:
             base[key] = value
     return base
@@ -316,6 +341,12 @@ class SessionState:
         # Guards against re-persisting the same final-segment snapshot on every repeated
         # SessionStatus "Finalised" message - see _apply_session_status.
         self._final_results_captured: bool = False
+        # Guards against re-flushing the formation lap on a repeated SessionStatus
+        # "Started" (e.g. a red-flag restart resends it) - see _apply_session_status. A
+        # second "Started" is a known, deliberately-accepted gap: without real captured
+        # data for a red-flag restart to confirm F1's actual behavior there, a repeat
+        # flush risks incorrectly splitting an in-progress racing lap instead.
+        self._formation_lap_captured: bool = False
 
         # Append-only.
         self.race_control_messages: Dict[str, Any] = {}
@@ -327,11 +358,24 @@ class SessionState:
         # dispatch below.
         self.driver_roster: Dict[int, Dict[str, Any]] = {}
 
-        # Battle Radar: each driver's last few completed-lap gap-to-car-ahead
-        # samples (lap_number, gap_seconds), and the currently active alert (if
-        # any) derived from that history - see _record_gap_sample/_update_battle_radar.
+        # Battle Radar: each driver's last few gap-to-car-ahead samples (lap_number,
+        # gap_seconds), and the currently active alert (if any) derived from that
+        # history - see _record_gap_sample/_record_live_gap_sample/_update_battle_radar.
         self._gap_history: Dict[int, Deque[Tuple[int, float]]] = {}
         self.battle_radar: Dict[int, Dict[str, Any]] = {}
+        # Predicted remaining tyre strategy per driver (race/sprint only), refreshed once per
+        # driver per completed lap by a detached Strands-Agent/Gemini call - see
+        # utils/tyre_strategy_prediction.py and LiveSessionPipeline._predict_and_broadcast_tyre_strategy.
+        # Already wire-shaped (like battle_radar above), not the raw TyreStrategyPrediction model.
+        self.tyre_strategy_predictions: Dict[int, Dict[str, Any]] = {}
+        # event_time of each driver's last *live* (not lap-boundary) gap sample -
+        # throttles _record_live_gap_sample, see _LIVE_GAP_SAMPLE_INTERVAL_SECONDS.
+        self._last_live_gap_sample_at: Dict[int, datetime] = {}
+        # Set by apply() before dispatching to a handler (see apply()'s docstring) - the
+        # real event time of whatever message is currently being processed, available to
+        # any handler that needs it (only _record_live_gap_sample does, today) without
+        # changing every handler's call signature just to thread one optional value through.
+        self._current_event_time: Optional[datetime] = None
 
         self._seen_radio_paths: Set[str] = set()
         self._current_lap_by_driver: Dict[int, int] = {}
@@ -371,6 +415,7 @@ class SessionState:
         if handler is None:
             logger.debug("No handler for event_name=%s, ignoring", event_name)
             return StateDiff(event_name=event_name, event_time=event_time)
+        self._current_event_time = event_time
         diff = handler(payload)
         diff.event_time = event_time
         return diff
@@ -428,6 +473,7 @@ class SessionState:
             "race_control_messages": self.race_control_messages,
             "driver_roster": self.driver_roster,
             "battle_radar": self.battle_radar,
+            "tyre_strategy_predictions": self.tyre_strategy_predictions,
         }
 
     # ---- per-topic handlers ----
@@ -447,11 +493,15 @@ class SessionState:
                 recompute_gaps = True
 
             if "NumberOfLaps" in fields:
-                completed, gap_touched = self._advance_lap(driver_number, fields["NumberOfLaps"])
+                completed = self._advance_lap(driver_number, fields["NumberOfLaps"])
                 if completed is not None:
                     diff.completed_laps.append(completed)
-                if gap_touched:
-                    diff.battle_radar_touched.append(driver_number)
+
+            # Live (not lap-boundary) Battle Radar sampling - race-only, since
+            # IntervalToPositionAhead is never sent during qualifying (confirmed
+            # earlier this session), so this is a no-op there regardless of session type.
+            if "IntervalToPositionAhead" in fields and self._record_live_gap_sample(driver_number):
+                diff.battle_radar_touched.append(driver_number)
 
         if recompute_gaps:
             self._recompute_qualifying_gaps()
@@ -487,13 +537,12 @@ class SessionState:
             driver_number: round(seconds - leader_seconds, 3) for driver_number, seconds in best_seconds.items()
         }
 
-    def _advance_lap(self, driver_number: int, new_lap_number: int) -> Tuple[Optional[CompletedLap], bool]:
+    def _advance_lap(self, driver_number: int, new_lap_number: int) -> Optional[CompletedLap]:
         """
         Detect a lap boundary: whenever a driver's NumberOfLaps increases, the
-        *previous* lap just completed. Flushes and resets that driver's
-        telemetry buffer, and records a Battle Radar gap sample. Returns
-        (None, False) if this isn't actually an advance (first sighting of the
-        driver, or a duplicate/out-of-order message).
+        *previous* lap just completed. Flushes and resets that driver's telemetry
+        buffer. Returns None if this isn't actually an advance (first sighting of
+        the driver, or a duplicate/out-of-order message).
 
         A CompletedLap is produced on every real advance, even when no telemetry was
         buffered for it (CarData.z not received - confirmed this can genuinely happen for
@@ -506,14 +555,16 @@ class SessionState:
         self._current_lap_by_driver[driver_number] = new_lap_number
 
         if previous_lap is None or new_lap_number <= previous_lap:
-            return None, False
+            return None
 
         # The message that announces the NEW lap number carries the just-completed
         # lap's time (and, likewise, its gap-to-car-ahead) in the same payload
         # (confirmed against real captured data: the message with NumberOfLaps=2 is
         # the one carrying LastLapTime for lap 1). `self.drivers` was already merged
-        # with this message's fields by the caller.
-        gap_to_ahead_seconds = self._record_gap_sample(driver_number, previous_lap)
+        # with this message's fields by the caller. Purely a value read for persistence -
+        # Battle Radar's own trend history is sampled independently, live, by
+        # _record_live_gap_sample (see _apply_timing_data), not tied to lap boundaries.
+        gap_to_ahead_seconds = self._current_gap_to_ahead(driver_number)
 
         last_lap_time = self.drivers.get(driver_number, {}).get("LastLapTime", {})
         lap_duration_seconds = parse_lap_time_to_seconds(last_lap_time.get("Value"))
@@ -521,34 +572,60 @@ class SessionState:
         buffer = self._telemetry_buffers.pop(driver_number, None) or TelemetrySampleBuffer()
         self._telemetry_buffers[driver_number] = TelemetrySampleBuffer()
 
-        return (
-            CompletedLap(
-                driver_number=driver_number,
-                lap_number=previous_lap,
-                lap_duration_seconds=lap_duration_seconds,
-                aggregates=buffer.compute_aggregates(DRS_ACTIVE_CODES),
-                telemetry=buffer,
-                gap_to_ahead_seconds=gap_to_ahead_seconds,
-                qualifying_part=self.qualifying_part,
-            ),
-            True,
+        return CompletedLap(
+            driver_number=driver_number,
+            lap_number=previous_lap,
+            lap_duration_seconds=lap_duration_seconds,
+            aggregates=buffer.compute_aggregates(DRS_ACTIVE_CODES),
+            telemetry=buffer,
+            gap_to_ahead_seconds=gap_to_ahead_seconds,
+            qualifying_part=self.qualifying_part,
         )
 
-    def _record_gap_sample(self, driver_number: int, lap_number: int) -> Optional[float]:
-        """Append this driver's gap-to-car-ahead at the just-completed lap boundary to
-        its rolling history, re-evaluate whether a Battle Radar alert is warranted, and
-        return the parsed gap (or None) so the caller can persist it on this lap's record."""
+    def _current_gap_to_ahead(self, driver_number: int) -> Optional[float]:
+        """Parse driver_number's current IntervalToPositionAhead value, or None (leader,
+        or a lapped-car interval like "1L") - a pure read with no side effects, used to
+        persist "what was the gap at this lap boundary" on a CompletedLap record. Battle
+        Radar's own trend state lives entirely in _record_live_gap_sample below."""
         raw_value = self.drivers.get(driver_number, {}).get("IntervalToPositionAhead", {}).get("Value")
-        gap_seconds = _parse_gap_seconds(raw_value)
+        return parse_gap_seconds(raw_value)
+
+    def _record_live_gap_sample(self, driver_number: int) -> bool:
+        """The sole writer to _gap_history/battle_radar: throttled by real *event* time
+        (_LIVE_GAP_SAMPLE_INTERVAL_SECONDS) and triggered by every live
+        IntervalToPositionAhead update, not tied to lap boundaries - see that constant's
+        comment for why lap-boundary-only sampling made Battle Radar too slow to catch a
+        closing trend before the moment it mattered had already passed.
+
+        Tagged with the driver's *current* (in-progress) lap number, so several samples
+        can legitimately share one lap_number if multiple ticks land within it before the
+        next boundary - expected and fine for both the trend check and the hover history.
+
+        Returns whether an alert-relevant recompute actually happened (battle_radar_touched
+        should fire), i.e. False when throttled.
+        """
+        now = self._current_event_time
+        last_sampled = self._last_live_gap_sample_at.get(driver_number)
+        # No event_time at all (only possible if a caller applied a message without one,
+        # e.g. some test code) means there's no reliable clock to throttle against -
+        # sample every time rather than silently never sampling.
+        if now is not None and last_sampled is not None and (now - last_sampled).total_seconds() < _LIVE_GAP_SAMPLE_INTERVAL_SECONDS:
+            return False
+        if now is not None:
+            self._last_live_gap_sample_at[driver_number] = now
+
+        gap_seconds = self._current_gap_to_ahead(driver_number)
         if gap_seconds is None:
             # Leader (no car ahead) or a lapped-car interval ("1L") - never a battle-radar candidate.
+            had_alert = driver_number in self.battle_radar
             self.battle_radar.pop(driver_number, None)
-            return None
+            return had_alert
 
+        lap_number = self._current_lap_by_driver.get(driver_number, 0)
         history = self._gap_history.setdefault(driver_number, deque(maxlen=_GAP_HISTORY_MAXLEN))
         history.append((lap_number, gap_seconds))
         self._update_battle_radar(driver_number)
-        return gap_seconds
+        return True
 
     def _update_battle_radar(self, driver_number: int) -> None:
         """
@@ -642,7 +719,16 @@ class SessionState:
         self, payload: Dict[str, Any], target: Dict[int, Dict[str, Any]], event_name: str
     ) -> StateDiff:
         diff = StateDiff(event_name=event_name)
-        for driver_str, fields in payload.get("Lines", {}).items():
+        lines = payload.get("Lines", {})
+        if isinstance(lines, list):
+            # TopThree's full-state snapshot (Subscribe RPC's initial-state result) sends
+            # "Lines" as a plain array of exactly 3 entries instead of the index-keyed dict
+            # incremental diffs use ("1"/"2"/"3" -> podium position, confirmed from real
+            # diffs) - confirmed live, this crashed with AttributeError: 'list' object has
+            # no attribute 'items' the first time an initial snapshot ever reached here.
+            # 1-indexed to match the position numbering real diffs use.
+            lines = {str(i + 1): entry for i, entry in enumerate(lines)}
+        for driver_str, fields in lines.items():
             driver_number = int(driver_str)
             deep_merge(target.setdefault(driver_number, {}), fields)
             diff.changed_driver_numbers.append(driver_number)
@@ -669,7 +755,52 @@ class SessionState:
         ):
             self._final_results_captured = True
             diff.qualifying_part_results = self._snapshot_qualifying_results(self.qualifying_part)
+
+        if (
+            payload.get("Status") == "Started"
+            and self.session_info.get("Type") in ("Race", "Sprint")
+            and not self._formation_lap_captured
+        ):
+            self._formation_lap_captured = True
+            diff.completed_laps.extend(self._capture_formation_lap())
+
         return diff
+
+    def _capture_formation_lap(self) -> List[CompletedLap]:
+        """
+        F1 never assigns a TimingData.NumberOfLaps value to the formation lap - it's
+        simply absent from the feed until a driver completes the first real racing lap,
+        at which point it appears already at 1 (confirmed against real captured race
+        data: SessionStatus "Started" fires, then ~90s later NumberOfLaps jumps straight
+        to 1 - never 0). _advance_lap's "first sighting -> no-op" branch therefore never
+        fires for the formation lap, and never flushes/resets the telemetry buffer either
+        - without this, all the grid/formation-lap CarData.z/Position.z samples silently
+        carry over and get merged into whatever accumulates for lap 1, polluting its
+        avg/max speed and DRS-active% with formation-lap pace.
+
+        Flushes each driver's current buffer (if it actually has samples - a driver with
+        nothing buffered yet gets no record, there being no independent fact-of-a-lap to
+        record the way a real NumberOfLaps advance has) as its own CompletedLap tagged
+        lap_number=0, then resets the buffer so lap 1 starts clean from the green flag.
+        No lap_duration_seconds/gap_to_ahead_seconds - F1 reports neither for it.
+        """
+        completed: List[CompletedLap] = []
+        for driver_number, buffer in list(self._telemetry_buffers.items()):
+            if not buffer.speed and not buffer.x:
+                continue
+            completed.append(
+                CompletedLap(
+                    driver_number=driver_number,
+                    lap_number=0,
+                    lap_duration_seconds=None,
+                    aggregates=buffer.compute_aggregates(DRS_ACTIVE_CODES),
+                    telemetry=buffer,
+                    gap_to_ahead_seconds=None,
+                    qualifying_part=None,
+                )
+            )
+            self._telemetry_buffers[driver_number] = TelemetrySampleBuffer()
+        return completed
 
     def _apply_session_data(self, payload: Dict[str, Any]) -> StateDiff:
         """

@@ -72,13 +72,21 @@ async def insert_pending(
     must be normalized first - previously wasn't, which meant every single capture
     crashed here (asyncpg.exceptions.DataError) before a row was ever inserted,
     confirmed against a real replay run.
+
+    The ON CONFLICT target must repeat the index's own `WHERE capture_path IS NOT NULL`
+    predicate verbatim - Postgres only matches a partial unique index for conflict
+    inference when the clause is present and identical, not just when the row being
+    inserted happens to satisfy it. Confirmed live: every insert during the actual race
+    raised asyncpg.exceptions.InvalidColumnReferenceError in a detached, unawaited task
+    (silently - process_radio_capture has no try/except around this call) until fixed,
+    meaning no team radio was ever persisted from the moment migration 0014 shipped.
     """
     async with DatabaseManager.get_connection() as conn:
         return await conn.fetchval(
             """
             INSERT INTO team_radio (session_key, driver_number, lap_number, qualifying_part, ts, capture_path, status)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (session_key, capture_path) DO NOTHING
+            ON CONFLICT (session_key, capture_path) WHERE capture_path IS NOT NULL DO NOTHING
             RETURNING id
             """,
             session_key, driver_number, lap_number, qualifying_part,

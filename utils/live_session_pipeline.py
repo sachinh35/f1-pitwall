@@ -38,6 +38,7 @@ from utils.live_persistence import (
 from utils.session_metadata import fetch_driver_roster, fetch_session_metadata, fetch_total_laps
 from utils.session_state import CompletedLap, RadioCapture, SessionState, StateDiff
 from utils.team_radio_pipeline import process_radio_capture
+from utils.tyre_strategy_prediction import TyreStrategyPrediction, build_context, predict_tyre_strategy
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,11 @@ _SESSION_WIDE_WIRE_KEYS: Dict[str, str] = {
     "ExtrapolatedClock": "extrapolated_clock",
     "RaceControlMessages": "race_control_messages",
 }
+
+# A queued tyre-strategy prediction request more than this many laps behind the session's
+# current lap by the time it's about to run is skipped rather than computed - see
+# LiveSessionPipeline._predict_and_broadcast_tyre_strategy.
+_TYRE_STRATEGY_STALE_LAP_THRESHOLD = 2
 
 
 def _radio_auth_headers() -> Optional[Dict[str, str]]:
@@ -92,6 +98,21 @@ def _completed_lap_to_wire(lap: CompletedLap) -> Dict[str, Any]:
         "max_speed_kmh": lap.aggregates.max_speed_kmh,
         "avg_throttle_pct": lap.aggregates.avg_throttle_pct,
         "drs_active_pct": lap.aggregates.drs_active_pct,
+    }
+
+
+def _tyre_strategy_prediction_to_wire(
+    prediction: TyreStrategyPrediction, driver_number: int, generated_at_lap: int
+) -> Dict[str, Any]:
+    return {
+        "driver_number": driver_number,
+        "generated_at_lap": generated_at_lap,
+        "predicted_stints": [
+            {"stint_number": s.stint_number, "compound": s.compound, "predicted_total_laps": s.predicted_total_laps}
+            for s in prediction.predicted_stints
+        ],
+        "safety_car_note": prediction.safety_car_note,
+        "summary": prediction.summary,
     }
 
 
@@ -331,6 +352,14 @@ class LiveSessionPipeline:
 
         for completed_lap in diff.completed_laps:
             self._spawn(self._persist_completed_lap(completed_lap))
+            # Race/sprint only (build_context itself also gates on this, but checking here
+            # too avoids spawning a task, building a context, and immediately discarding it
+            # for every qualifying lap). lap_number == 0 is the formation lap (see
+            # SessionState._capture_formation_lap) - not representative racing pace, skipped.
+            if completed_lap.lap_number > 0 and self.state.session_info.get("Type") in ("Race", "Sprint"):
+                self._spawn(
+                    self._predict_and_broadcast_tyre_strategy(completed_lap.driver_number, completed_lap.lap_number)
+                )
 
         for capture in diff.new_radio_captures:
             if self.state.session_key is not None:
@@ -460,6 +489,38 @@ class LiveSessionPipeline:
             await persist_total_laps(session_key, total_laps)
         except Exception:
             logger.exception("Failed to persist total_laps for session_key=%s", session_key)
+
+    async def _predict_and_broadcast_tyre_strategy(self, driver_number: int, lap_number: int) -> None:
+        """Refresh one driver's predicted remaining tyre strategy after they complete a lap -
+        see utils/tyre_strategy_prediction.py. Best-effort: a failed/slow Gemini call just
+        means that driver's prediction goes stale until their next completed lap, never
+        raised into the pipeline processing everything else.
+
+        These calls are globally rate-limited (see tyre_strategy_prediction._throttle -
+        Gemini's free tier caps out around the same order of magnitude as one lap's worth of
+        drivers), so a burst of completed-lap events can queue up faster than they drain -
+        confirmed live: re-attaching to an in-progress race replays its whole archive from
+        lap 1 before catching up to "now", queuing one prediction per driver per historical
+        lap. Re-checking staleness right before the (still rate-limited, so not free) call is
+        made lets a since-superseded request skip immediately rather than wait its turn only
+        to produce a prediction for a lap count the race has long moved past - this is what
+        lets the queue actually catch up to real-time instead of grinding through history."""
+        context = build_context(self.state, driver_number)
+        if context is None:
+            return
+        current_lap = self.state.lap_count.get("CurrentLap")
+        if current_lap is not None and current_lap - lap_number > _TYRE_STRATEGY_STALE_LAP_THRESHOLD:
+            return
+        try:
+            prediction = await predict_tyre_strategy(context)
+        except Exception:
+            logger.exception(
+                "Failed to predict tyre strategy for driver=%s lap=%s", driver_number, lap_number
+            )
+            return
+        wire = _tyre_strategy_prediction_to_wire(prediction, driver_number, lap_number)
+        self.state.tyre_strategy_predictions[driver_number] = wire
+        await self._broadcast("TYRE_STRATEGY_PREDICTION", {"driver_number": driver_number, "prediction": wire})
 
     async def _broadcast_radio_event(self, event_name: str, row_id: int) -> None:
         """Forward team_radio_pipeline's on_downloaded/on_transcribed callbacks onto this session's SSE

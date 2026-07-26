@@ -132,3 +132,52 @@ async def test_handle_message_async_passes_a_real_now_event_time_to_the_sink() -
     assert call_args[1] == {"AirTemp": "22.0"}
     event_time = call_args[2]
     assert before <= event_time <= after
+
+
+def _fake_completion(result=None, error=None) -> MagicMock:
+    """Stands in for signalrcore's CompletionMessage - only .result/.error are read."""
+    return MagicMock(result=result, error=error)
+
+
+@pytest.mark.asyncio
+async def test_handle_subscribe_result_feeds_every_topic_through_handle_message_async() -> None:
+    """F1's Subscribe RPC call returns the full current state as its invocation result -
+    e.g. {"LapCount": {"CurrentLap": 1}, "TimingAppData": {...}} - separate from the
+    ongoing feed push messages. Previously dropped entirely (send() had no on_invocation),
+    so a client always started blank and only learned a low-frequency field's *current*
+    value once it happened to change again. This is the fix: each topic's initial value
+    must reach the same handle_message() path a live diff would."""
+    sink = _fake_sink()
+    sink.handle_message = AsyncMock()
+    streamer = F1SignalRStreamer(access_token="", sink=sink, stream_id="test_subscribe_result", loop=asyncio.get_running_loop())
+
+    completion = _fake_completion(result={"LapCount": {"CurrentLap": 1}, "TimingAppData": {"Lines": {}}})
+    streamer._handle_subscribe_result(completion)
+    await asyncio.sleep(0.05)
+
+    assert sink.handle_message.await_count == 2
+    calls = {c.args[0]: c.args[1] for c in sink.handle_message.await_args_list}
+    assert calls == {"LapCount": {"CurrentLap": 1}, "TimingAppData": {"Lines": {}}}
+
+
+def test_handle_subscribe_result_ignores_a_non_dict_or_missing_result() -> None:
+    """An error completion (message.result is None, message.error set) or any other
+    non-dict result must be skipped, not crash the connect/subscribe path."""
+    sink = _fake_sink()
+    streamer = F1SignalRStreamer(access_token="", sink=sink, stream_id="test_subscribe_result_error")
+
+    streamer._handle_subscribe_result(_fake_completion(result=None, error="boom"))  # must not raise
+    streamer._handle_subscribe_result(_fake_completion(result="not a dict"))  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_handle_subscribe_result_skips_none_valued_topics() -> None:
+    sink = _fake_sink()
+    sink.handle_message = AsyncMock()
+    streamer = F1SignalRStreamer(access_token="", sink=sink, stream_id="test_subscribe_result_none", loop=asyncio.get_running_loop())
+
+    streamer._handle_subscribe_result(_fake_completion(result={"Heartbeat": None, "LapCount": {"CurrentLap": 1}}))
+    await asyncio.sleep(0.05)
+
+    sink.handle_message.assert_awaited_once()
+    assert sink.handle_message.call_args.args[:2] == ("LapCount", {"CurrentLap": 1})

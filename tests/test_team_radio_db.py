@@ -41,6 +41,24 @@ async def test_insert_pending_returns_new_row_id(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
+async def test_insert_pending_on_conflict_clause_repeats_the_partial_index_predicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test: uq_team_radio_session_capture_path is a *partial* unique index
+    (WHERE capture_path IS NOT NULL) - Postgres only matches a partial index for ON
+    CONFLICT inference when the clause repeats that exact predicate, not just when the
+    row being inserted happens to satisfy it. Confirmed against a real database: without
+    the WHERE clause here, every single insert raised
+    asyncpg.exceptions.InvalidColumnReferenceError, silently, in a detached task with no
+    try/except around it - no team radio was ever persisted from the moment the
+    (unqualified) ON CONFLICT clause shipped."""
+    mock_conn = _mock_db(monkeypatch, fetchval_result=42)
+    await team_radio_db.insert_pending(9850, 1, 12, datetime(2025, 11, 30, 16, 10, 50), "TeamRadio/x.mp3")
+    query = mock_conn.fetchval.call_args.args[0]
+    assert "ON CONFLICT (session_key, capture_path) WHERE capture_path IS NOT NULL DO NOTHING" in query
+
+
+@pytest.mark.asyncio
 async def test_insert_pending_returns_none_on_a_duplicate_capture_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression test: re-simulating/re-tailing the same archive must not re-download,
     re-transcribe, or re-analyze a capture it already has a row for - ON CONFLICT (session_key,
