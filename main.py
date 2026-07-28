@@ -28,6 +28,8 @@ from api_pydantic_models.live_stream import (
     StartBrowserAuthResponse,
     StartStreamRequest,
     StartStreamResponse,
+    TokenStatusResponse,
+    UpdateTokenRequest,
 )
 from api_pydantic_models.race_control import GetSessionRaceControlEventsResponse
 from api_pydantic_models.race_sesssions import GetAllSessionTypesResponse, GetSessionResultsResponse, SessionType
@@ -233,6 +235,24 @@ async def browser_auth_status() -> BrowserAuthStatusResponse:
     return BrowserAuthStatusResponse(**status)
 
 
+@app.get("/f1tv-token/status", response_model=TokenStatusResponse)
+async def get_f1tv_token_status() -> TokenStatusResponse:
+    """Check whether the currently saved F1TV token is valid and non-expired - polled
+    by the frontend before starting a live stream, and to re-check after the user
+    pastes in a fresh token."""
+    validity = f1_auth.describe_token_validity(f1_auth.get_saved_token())
+    return TokenStatusResponse(valid=validity.valid, reason=validity.reason, expires_at=validity.expires_at)
+
+
+@app.post("/f1tv-token", response_model=TokenStatusResponse)
+async def update_f1tv_token(request: UpdateTokenRequest) -> TokenStatusResponse:
+    """Validate a freshly-pasted F1TV token and, only if valid, save it as the new saved token."""
+    validity = f1_auth.describe_token_validity(request.token)
+    if validity.valid:
+        f1_auth.save_token(request.token)
+    return TokenStatusResponse(valid=validity.valid, reason=validity.reason, expires_at=validity.expires_at)
+
+
 @app.get("/team-driver-pool", response_model=GetTeamDriverPoolResponse)
 async def get_team_driver_pool_endpoint(season_year: int = CURRENT_SEASON_YEAR) -> GetTeamDriverPoolResponse:
     """
@@ -264,21 +284,22 @@ async def start_live_stream(request: StartStreamRequest) -> StartStreamResponse:
         token = request.access_token
 
         if not token:
+            # A missing/expired token doesn't just break team-radio audio - CarData.z
+            # and Position.z (car telemetry/position) silently never arrive either,
+            # with no error anywhere. So unlike the old behavior here, a bad saved
+            # token now hard-fails rather than proceeding unauthenticated; the
+            # frontend gates /start-live-stream on GET /f1tv-token/status first and
+            # walks the user through POST /f1tv-token if this fires.
             logging.info("No access token in request, attempting to load saved token")
             saved_token = f1_auth.get_saved_token()
-            if saved_token and f1_auth.validate_subscription_token(saved_token):
-                token = saved_token
-                logging.info("Using saved subscription token")
-            else:
-                # F1's SignalR negotiate/connect doesn't actually require auth (only
-                # subscriber content, like team-radio audio, does) - F1SignalRStreamer
-                # already tolerates an empty token by skipping access_token_factory
-                # entirely (see utils/live_stream.py's _build_headers/connect). So rather
-                # than hard-blocking here, proceed unauthenticated: live timing data still
-                # works, only the team-radio audio download step will fail without a
-                # valid token, which it already does gracefully (failed_download status).
-                logging.info("No valid token available - proceeding unauthenticated")
-                token = ""
+            validity = f1_auth.describe_token_validity(saved_token)
+            if not validity.valid:
+                raise HTTPException(
+                    status_code=401,
+                    detail=validity.reason or "No valid F1TV token configured - update your token before starting a live stream.",
+                )
+            token = saved_token
+            logging.info("Using saved subscription token")
 
         streamer = live_stream.start_stream(
             access_token=token,

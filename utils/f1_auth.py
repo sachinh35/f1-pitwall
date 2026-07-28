@@ -16,6 +16,8 @@ import logging
 import os
 import threading
 import urllib.parse
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -55,34 +57,66 @@ def _get_jwk_from_jwks_uri(jwks_uri, kid):
     raise ValueError("Public key not found in JWKS for given kid.")
 
 
-def validate_subscription_token(token: str) -> bool:
-    """
-    Verify the JWT token against F1's public keys.
-    """
+@dataclass
+class TokenValidity:
+    valid: bool
+    reason: Optional[str]
+    expires_at: Optional[str]  # ISO 8601 UTC, when decodable
+
+
+def _exp_claim_as_iso(token: str) -> Optional[str]:
+    """Best-effort read of the unverified `exp` claim, purely for display - never
+    used for a trust decision (see describe_token_validity)."""
     try:
-        # Decode headers to get the kid
+        payload = jwt.decode(token, options={"verify_signature": False})
+        exp = payload.get("exp")
+        if exp is None:
+            return None
+        return datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def describe_token_validity(token: Optional[str]) -> TokenValidity:
+    """
+    Validate a raw F1TV JWT and explain why, for display in the UI - unlike
+    validate_subscription_token's plain bool, this also reports the expiry and a
+    human-readable reason when invalid (expired vs malformed vs missing).
+    """
+    if not token:
+        return TokenValidity(valid=False, reason="No F1TV token configured", expires_at=None)
+
+    try:
         unverified_header = jwt.get_unverified_header(token)
         kid = unverified_header.get('kid')
-        
-        if not kid:
-            return False
-            
-        jwk = _get_jwk_from_jwks_uri(JWKS_URL, kid)
 
-        # Convert JWK to public key
+        if not kid:
+            return TokenValidity(valid=False, reason="Token is invalid: missing key id", expires_at=None)
+
+        jwk = _get_jwk_from_jwks_uri(JWKS_URL, kid)
         public_key = RSAAlgorithm.from_jwk(jwk)
 
-        # Verify and decode the token
-        jwt.decode(
+        payload = jwt.decode(
             token,
             key=public_key,
             algorithms=["RS256"],
             verify=True
         )
-        return True
+        exp = payload.get("exp")
+        expires_at = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat() if exp is not None else None
+        return TokenValidity(valid=True, reason=None, expires_at=expires_at)
+    except jwt.ExpiredSignatureError:
+        return TokenValidity(valid=False, reason="Token has expired", expires_at=_exp_claim_as_iso(token))
     except Exception as e:
         logger.warning(f"Token validation failed: {e}")
-        return False
+        return TokenValidity(valid=False, reason=f"Token is invalid: {e}", expires_at=None)
+
+
+def validate_subscription_token(token: str) -> bool:
+    """
+    Verify the JWT token against F1's public keys.
+    """
+    return describe_token_validity(token).valid
 
 
 def get_saved_token() -> Optional[str]:
@@ -96,6 +130,15 @@ def get_saved_token() -> Optional[str]:
         except Exception as e:
             logger.error(f"Error reading auth file: {e}")
     return None
+
+
+def save_token(token: str) -> None:
+    """Persist a freshly-validated token as the new saved token - plain text, no
+    JSON wrapper, mirroring get_saved_token()'s read side. Overwrites whatever's
+    already there."""
+    AUTH_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(AUTH_DATA_FILE, 'w') as f:
+        f.write(token.strip())
 
 
 async def authenticate_f1tv(email: str = "", password: str = "") -> Dict[str, Any]:

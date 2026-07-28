@@ -108,3 +108,13 @@ class GetTeamRadioResponse(BaseModel):
     session_key: int
     clips: List[TeamRadioDB]
 
+
+class TokenStatusResponse(BaseModel):
+    valid: bool = Field(..., description="Whether a valid, non-expired F1TV token is currently saved")
+    reason: Optional[str] = Field(None, description="Why the token is invalid, when valid is False")
+    expires_at: Optional[str] = Field(None, description="ISO 8601 UTC expiry of the token, when known")
+
+
+class UpdateTokenRequest(BaseModel):
+    token: str = Field(..., description="Raw F1TV JWT bearer token, as copied from a browser session")
+

@@ -8,9 +8,13 @@ is monkeypatched to a tmp_path).
 import json
 import re
 import urllib.parse
+from datetime import datetime, timedelta, timezone
 
 import httpx
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
+from jwt.algorithms import RSAAlgorithm
 
 from utils import f1_auth
 
@@ -114,3 +118,129 @@ def test_full_flow_invalid_token_marks_failed_and_does_not_save(monkeypatch: pyt
     assert status["status"] == "failed"
     assert "error" in status
     assert not f1_auth.AUTH_DATA_FILE.exists()
+
+
+# ---- describe_token_validity / validate_subscription_token / save_token ----
+#
+# A real RSA keypair is generated once per test module and used to sign genuine
+# RS256 tokens - _get_jwk_from_jwks_uri's HTTP call (requests.get) is mocked to
+# serve this keypair's public half as the JWKS, so the actual verification path
+# (jwt.decode + RSAAlgorithm) is exercised for real, not just the wrapper.
+
+_TEST_KID = "test-kid"
+
+
+@pytest.fixture(scope="module")
+def rsa_keypair():
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return private_key, private_key.public_key()
+
+
+@pytest.fixture(autouse=True)
+def _mock_jwks(monkeypatch: pytest.MonkeyPatch, rsa_keypair):
+    """Serves rsa_keypair's public key as the JWKS response for every test in this
+    module, in place of a real network call to F1's JWKS_URL."""
+    _, public_key = rsa_keypair
+    jwk = json.loads(RSAAlgorithm.to_jwk(public_key))
+    jwk["kid"] = _TEST_KID
+
+    class _FakeJwksResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {"keys": [jwk]}
+
+    monkeypatch.setattr(f1_auth.requests, "get", lambda *_args, **_kwargs: _FakeJwksResponse())
+    yield
+
+
+def _make_token(rsa_keypair, exp_delta: timedelta, kid: str = _TEST_KID) -> str:
+    private_key, _ = rsa_keypair
+    payload = {"exp": datetime.now(tz=timezone.utc) + exp_delta}
+    return jwt.encode(payload, key=private_key, algorithm="RS256", headers={"kid": kid})
+
+
+def test_describe_token_validity_valid_token(rsa_keypair) -> None:
+    token = _make_token(rsa_keypair, timedelta(hours=1))
+    result = f1_auth.describe_token_validity(token)
+    assert result.valid is True
+    assert result.reason is None
+    assert result.expires_at is not None
+
+
+def test_describe_token_validity_expired_token(rsa_keypair) -> None:
+    token = _make_token(rsa_keypair, timedelta(hours=-1))
+    result = f1_auth.describe_token_validity(token)
+    assert result.valid is False
+    assert result.reason == "Token has expired"
+    # Expiry is still reported for display, read unverified from the payload.
+    assert result.expires_at is not None
+
+
+def test_describe_token_validity_malformed_token() -> None:
+    result = f1_auth.describe_token_validity("not-a-jwt-at-all")
+    assert result.valid is False
+    assert result.reason is not None
+    assert "invalid" in result.reason.lower()
+    assert result.expires_at is None
+
+
+def test_describe_token_validity_no_token() -> None:
+    assert f1_auth.describe_token_validity(None) == f1_auth.TokenValidity(
+        valid=False, reason="No F1TV token configured", expires_at=None
+    )
+    assert f1_auth.describe_token_validity("") == f1_auth.TokenValidity(
+        valid=False, reason="No F1TV token configured", expires_at=None
+    )
+
+
+def test_describe_token_validity_bad_signature() -> None:
+    """A token signed by a different key than the one JWKS actually serves for that
+    kid - simulates a forged/corrupted token."""
+    other_private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    payload = {"exp": datetime.now(tz=timezone.utc) + timedelta(hours=1)}
+    token = jwt.encode(payload, key=other_private_key, algorithm="RS256", headers={"kid": _TEST_KID})
+    result = f1_auth.describe_token_validity(token)
+    assert result.valid is False
+    assert result.reason is not None and "invalid" in result.reason.lower()
+
+
+def test_describe_token_validity_missing_kid(rsa_keypair) -> None:
+    private_key, _ = rsa_keypair
+    payload = {"exp": datetime.now(tz=timezone.utc) + timedelta(hours=1)}
+    token = jwt.encode(payload, key=private_key, algorithm="RS256")
+    result = f1_auth.describe_token_validity(token)
+    assert result.valid is False
+    assert result.reason == "Token is invalid: missing key id"
+
+
+@pytest.mark.parametrize("exp_delta", [timedelta(hours=1), timedelta(hours=-1)])
+def test_validate_subscription_token_matches_describe_token_validity(rsa_keypair, exp_delta) -> None:
+    """Regression: validate_subscription_token's plain bool must keep agreeing with
+    describe_token_validity().valid post-refactor, for both a valid and an expired token."""
+    token = _make_token(rsa_keypair, exp_delta)
+    assert f1_auth.validate_subscription_token(token) == f1_auth.describe_token_validity(token).valid
+
+
+def test_validate_subscription_token_false_for_malformed_token() -> None:
+    assert f1_auth.validate_subscription_token("garbage") is False
+
+
+def test_save_token_writes_stripped_token(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    auth_file = tmp_path / "nested" / "f1auth.json"
+    monkeypatch.setattr(f1_auth, "AUTH_DATA_FILE", auth_file)
+
+    f1_auth.save_token("  some.raw.jwt  \n")
+
+    assert auth_file.read_text() == "some.raw.jwt"
+
+
+def test_save_token_overwrites_existing(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    auth_file = tmp_path / "f1auth.json"
+    auth_file.write_text("old.token")
+    monkeypatch.setattr(f1_auth, "AUTH_DATA_FILE", auth_file)
+
+    f1_auth.save_token("new.token")
+
+    assert auth_file.read_text() == "new.token"
