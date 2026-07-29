@@ -489,6 +489,14 @@ class SessionState:
             deep_merge(self.drivers.setdefault(driver_number, {}), fields)
             diff.changed_driver_numbers.append(driver_number)
 
+            if "Sectors" in fields:
+                # Sector splits (S1/S2/S3) update incrementally as a lap is driven, in
+                # separate messages from NumberOfLaps - stamping the lap count known at the
+                # moment sectors changed lets the UI show "as of lap N" instead of implying
+                # the sectors are for whatever lap happens to be displayed elsewhere by the
+                # time this reaches the frontend.
+                self.drivers[driver_number]["SectorsLap"] = self.drivers[driver_number].get("NumberOfLaps")
+
             if "BestLapTime" in fields:
                 recompute_gaps = True
 

@@ -95,6 +95,32 @@ def test_timing_data_merge_accumulates_driver_state() -> None:
     assert state.drivers[81]["NumberOfLaps"] == 2
 
 
+def test_sectors_update_stamps_the_lap_it_was_captured_on() -> None:
+    state = SessionState()
+    state.apply("TimingData", {"Lines": {"44": {"NumberOfLaps": 5}}})
+    state.apply("TimingData", {"Lines": {"44": {"Sectors": {"0": {"Value": "28.924"}}}}})
+
+    assert state.drivers[44]["SectorsLap"] == 5
+
+
+def test_sectors_update_with_no_prior_number_of_laps_stamps_none() -> None:
+    state = SessionState()
+    state.apply("TimingData", {"Lines": {"44": {"Sectors": {"0": {"Value": "28.924"}}}}})
+
+    assert state.drivers[44]["SectorsLap"] is None
+
+
+def test_sectors_lap_marker_only_updates_when_sectors_actually_change() -> None:
+    state = SessionState()
+    state.apply("TimingData", {"Lines": {"44": {"NumberOfLaps": 5, "Sectors": {"0": {"Value": "28.924"}}}}})
+    assert state.drivers[44]["SectorsLap"] == 5
+
+    # NumberOfLaps advances with no new Sectors data in the same message - the marker
+    # must not silently jump to the new lap until a real sector value arrives for it.
+    state.apply("TimingData", {"Lines": {"44": {"NumberOfLaps": 6}}})
+    assert state.drivers[44]["SectorsLap"] == 5
+
+
 def test_lap_completion_not_fired_on_first_sighting() -> None:
     state = SessionState()
     first_msg = FIXTURES["timing_data_lap_progression_driver_81"][0]
