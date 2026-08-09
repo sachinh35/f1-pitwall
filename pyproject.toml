@@ -13,7 +13,7 @@ dependencies = [
     "signalrcore",
     "platformdirs",
     "pyjwt",
-    "cryptography",
+    "cryptography>=50.0.0",
     "websockets",
     "sse-starlette",
     "pywhispercpp",
@@ -32,6 +32,11 @@ dev = [
 
 [tool.uv]
 package = false
+# signalrcore==1.0.2 (latest on PyPI) hard-pins msgpack==1.1.2, which is vulnerable
+# (GHSA-6v7p-g79w-8964, fixed in 1.2.1) - no newer signalrcore release relaxes that pin, so
+# force the patched msgpack via an override instead. msgpack's pack/unpack API signalrcore
+# actually uses is unchanged between 1.1.2 and 1.2.1 (verified: backend test suite passes).
+override-dependencies = ["msgpack>=1.2.1"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
