@@ -140,6 +140,33 @@ def _driver_info_to_wire(driver: DriverInfo) -> Dict[str, Any]:
     }
 
 
+# The four categories the frontend's Race Control filter understands. Keyed by F1's raw
+# Category value lowercased, so "Flag"/"flag"/"FLAG" all normalize the same way.
+_RACE_CONTROL_CATEGORIES: Dict[str, str] = {"flag": "Flag", "safetycar": "SafetyCar", "drs": "Drs"}
+
+
+def _normalize_race_control_category(category: Optional[str]) -> str:
+    """Collapse F1's raw RaceControlMessages Category to one of exactly four values (Flag/
+    SafetyCar/Drs/Other) before it ever reaches the frontend - anything unrecognized (a
+    missing/None Category, or something like OpenF1's historical-only "SessionStatus", which
+    the live feed itself never actually sends - confirmed across three captured sessions)
+    collapses to "Other" instead of leaking an arbitrary raw string into the filter UI.
+
+    Applied only at the SSE wire boundary (see diff_to_wire/subscribe below) - the raw value
+    F1 actually sent is still what gets archived and persisted to race_control_events.category,
+    since that's the historical record and must stay faithful to the source."""
+    if not category:
+        return "Other"
+    return _RACE_CONTROL_CATEGORIES.get(category.strip().lower(), "Other")
+
+
+def _race_control_messages_to_wire(messages: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    return {
+        index: {**entry, "Category": _normalize_race_control_category(entry.get("Category"))}
+        for index, entry in messages.items()
+    }
+
+
 def _confirmed_entry_to_wire(entry: ConfirmedRosterEntry) -> Dict[str, Any]:
     """Same wire shape as _driver_info_to_wire, minus the OpenF1-only fields a manually-confirmed
     entry never has (broadcast_name, first/last name, headshot, country) - left None."""
@@ -171,7 +198,10 @@ def diff_to_wire(diff: StateDiff, state: SessionState) -> Dict[str, Any]:
 
     session_wide_key = _SESSION_WIDE_WIRE_KEYS.get(diff.event_name)
     if session_wide_key is not None:
-        wire[session_wide_key] = getattr(state, session_wide_key)
+        value = getattr(state, session_wide_key)
+        if diff.event_name == "RaceControlMessages":
+            value = _race_control_messages_to_wire(value)
+        wire[session_wide_key] = value
 
     if diff.event_name in ("SessionData", "SessionInfo"):
         # Derived state, not a straight mirror of either raw topic - see
@@ -256,7 +286,9 @@ class LiveSessionPipeline:
         subscriber_id = self._next_subscriber_id
         self._next_subscriber_id += 1
         queue: "asyncio.Queue[Dict[str, Any]]" = asyncio.Queue()
-        queue.put_nowait(self._make_message("snapshot", self.state.snapshot()))
+        snapshot = self.state.snapshot()
+        snapshot["race_control_messages"] = _race_control_messages_to_wire(snapshot["race_control_messages"])
+        queue.put_nowait(self._make_message("snapshot", snapshot))
         self._subscribers[subscriber_id] = queue
         return subscriber_id, queue
 
@@ -430,7 +462,9 @@ class LiveSessionPipeline:
                 except Exception:
                     logger.exception("Failed to persist session metadata for session_key=%s", session_key)
             try:
-                await persist_confirmed_driver_roster(session_key, self._confirmed_roster)
+                await persist_confirmed_driver_roster(
+                    session_key, self._confirmed_roster, year=session_meta.year if session_meta else None
+                )
             except Exception:
                 logger.exception("Failed to persist confirmed driver roster for session_key=%s", session_key)
             return
@@ -453,7 +487,7 @@ class LiveSessionPipeline:
             return
 
         try:
-            await persist_driver_roster(session_key, drivers)
+            await persist_driver_roster(session_key, drivers, year=session_meta.year if session_meta else None)
         except Exception:
             logger.exception("Failed to persist driver roster for session_key=%s", session_key)
 

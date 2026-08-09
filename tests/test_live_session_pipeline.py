@@ -103,6 +103,21 @@ def test_subscribe_delivers_initial_snapshot() -> None:
     assert subscriber_id in pipeline._subscribers
 
 
+def test_subscribe_snapshot_normalizes_race_control_categories() -> None:
+    """A client connecting after messages already arrived must see the same normalized
+    categories a live diff broadcast would have given it - see diff_to_wire's equivalent
+    normalization for the ongoing-broadcast path."""
+    pipeline = LiveSessionPipeline(stream_id="test-snapshot-rc")
+    pipeline.state.apply("RaceControlMessages", {"Messages": {"1": {"Category": "safetycar", "Message": "SC"}}})
+
+    _, queue = pipeline.subscribe()
+
+    message = queue.get_nowait()
+    assert message["data"]["race_control_messages"]["1"]["Category"] == "SafetyCar"
+    # The raw value F1 sent must stay untouched in state itself.
+    assert pipeline.state.race_control_messages["1"]["Category"] == "safetycar"
+
+
 def test_unsubscribe_removes_subscriber() -> None:
     pipeline = LiveSessionPipeline(stream_id="test-2")
     subscriber_id, _ = pipeline.subscribe()
@@ -648,7 +663,9 @@ async def test_session_info_persists_confirmed_roster_and_skips_openf1_driver_fe
     fetch_roster.assert_not_awaited()
     pipeline_module.persist_driver_roster.assert_not_awaited()
 
-    pipeline_module.persist_confirmed_driver_roster.assert_awaited_once_with(9850, _SAMPLE_CONFIRMED_ROSTER)
+    pipeline_module.persist_confirmed_driver_roster.assert_awaited_once_with(
+        9850, _SAMPLE_CONFIRMED_ROSTER, year=_SAMPLE_SESSION_META.year
+    )
     # The confirmed roster (set at construction) is untouched by the OpenF1-fetch path.
     assert pipeline.state.driver_roster[1]["full_name"] == "Lando Norris"
 
@@ -795,3 +812,53 @@ def test_diff_to_wire_radio_capture_qualifying_part_is_none_for_a_race() -> None
     wire = diff_to_wire(diff, state)
     assert wire["new_radio_captures"][0]["qualifying_part"] is None
     assert wire["new_radio_captures"][0]["lap_number"] == 8
+
+
+# ---- diff_to_wire: RaceControlMessages category normalization ----
+
+def test_diff_to_wire_normalizes_race_control_categories_case_insensitively() -> None:
+    state = SessionState()
+    state.apply(
+        "RaceControlMessages",
+        {
+            "Messages": {
+                "1": {"Category": "flag", "Message": "GREEN LIGHT"},
+                "2": {"Category": "SAFETYCAR", "Message": "SAFETY CAR DEPLOYED"},
+                "3": {"Category": "Drs", "Message": "DRS ENABLED"},
+            }
+        },
+    )
+    diff = state.apply("RaceControlMessages", {"Messages": {"4": {"Category": "flag", "Message": "YELLOW FLAG"}}})
+
+    wire = diff_to_wire(diff, state)
+
+    assert wire["race_control_messages"]["1"]["Category"] == "Flag"
+    assert wire["race_control_messages"]["2"]["Category"] == "SafetyCar"
+    assert wire["race_control_messages"]["3"]["Category"] == "Drs"
+    assert wire["race_control_messages"]["4"]["Category"] == "Flag"
+
+
+def test_diff_to_wire_collapses_unrecognized_or_missing_category_to_other() -> None:
+    state = SessionState()
+    diff = state.apply(
+        "RaceControlMessages",
+        {
+            "Messages": {
+                "1": {"Category": "SessionStatus", "Message": "SESSION ENDS"},
+                "2": {"Message": "NO CATEGORY AT ALL"},
+            }
+        },
+    )
+    wire = diff_to_wire(diff, state)
+    assert wire["race_control_messages"]["1"]["Category"] == "Other"
+    assert wire["race_control_messages"]["2"]["Category"] == "Other"
+
+
+def test_diff_to_wire_race_control_normalization_does_not_mutate_stored_state() -> None:
+    """The normalized Category is a wire-shaping concern only - the raw value F1 actually sent
+    must stay untouched in state.race_control_messages, since that's what gets archived/
+    persisted to race_control_events.category (the historical record)."""
+    state = SessionState()
+    diff = state.apply("RaceControlMessages", {"Messages": {"1": {"Category": "flag", "Message": "GREEN LIGHT"}}})
+    diff_to_wire(diff, state)
+    assert state.race_control_messages["1"]["Category"] == "flag"

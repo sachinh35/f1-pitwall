@@ -313,8 +313,13 @@ async def persist_total_laps(session_key: int, total_laps: int) -> None:
     logger.info("Persisted total_laps session_key=%s total_laps=%s", session_key, total_laps)
 
 
-async def persist_driver_roster(session_key: int, drivers: List[DriverInfo]) -> None:
-    """Upsert the driver roster actually entered for this session into `driver_roster`."""
+async def persist_driver_roster(session_key: int, drivers: List[DriverInfo], year: Optional[int] = None) -> None:
+    """Upsert the driver roster actually entered for this session into `driver_roster`.
+
+    `year` is denormalized from the session's own F1Session.year (the caller already has it
+    on hand - see live_session_pipeline.py's _fetch_and_broadcast_session_meta) so reads never
+    need to join to `sessions` just to filter/group a roster by season. None only when the
+    OpenF1 session-metadata fetch itself failed, same as a NULL sessions.year in that case."""
     async with DatabaseManager.get_connection() as conn:
         async with conn.transaction():
             for driver in drivers:
@@ -322,8 +327,8 @@ async def persist_driver_roster(session_key: int, drivers: List[DriverInfo]) -> 
                     """
                     INSERT INTO driver_roster (
                         session_key, driver_number, broadcast_name, full_name, name_acronym,
-                        team_name, team_colour, first_name, last_name, headshot_url, country_code
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                        team_name, team_colour, first_name, last_name, headshot_url, country_code, year
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                     ON CONFLICT (session_key, driver_number) DO UPDATE SET
                         broadcast_name = EXCLUDED.broadcast_name,
                         full_name = EXCLUDED.full_name,
@@ -333,31 +338,36 @@ async def persist_driver_roster(session_key: int, drivers: List[DriverInfo]) -> 
                         first_name = EXCLUDED.first_name,
                         last_name = EXCLUDED.last_name,
                         headshot_url = EXCLUDED.headshot_url,
-                        country_code = EXCLUDED.country_code
+                        country_code = EXCLUDED.country_code,
+                        year = EXCLUDED.year
                     """,
                     session_key, driver.driver_number, driver.broadcast_name, driver.full_name,
                     driver.name_acronym, driver.team_name, driver.team_colour, driver.first_name,
-                    driver.last_name, driver.headshot_url, driver.country_code,
+                    driver.last_name, driver.headshot_url, driver.country_code, year,
                 )
-    logger.info("Persisted driver roster session_key=%s count=%d", session_key, len(drivers))
+    logger.info("Persisted driver roster session_key=%s year=%s count=%d", session_key, year, len(drivers))
 
 
-async def persist_confirmed_driver_roster(session_key: int, entries: List[ConfirmedRosterEntry]) -> None:
+async def persist_confirmed_driver_roster(
+    session_key: int, entries: List[ConfirmedRosterEntry], year: Optional[int] = None
+) -> None:
     """Upsert a user-confirmed pre-race lineup into `driver_roster` - the same table the OpenF1-backed
     fetch writes to, just without the extra OpenF1-only fields (broadcast_name, headshot_url, etc.),
-    which stay NULL here since a manually-confirmed entry never has them."""
+    which stay NULL here since a manually-confirmed entry never has them. See persist_driver_roster
+    for where `year` comes from."""
     async with DatabaseManager.get_connection() as conn:
         async with conn.transaction():
             for entry in entries:
                 await conn.execute(
                     """
-                    INSERT INTO driver_roster (session_key, driver_number, full_name, name_acronym, team_name)
-                    VALUES ($1, $2, $3, $4, $5)
+                    INSERT INTO driver_roster (session_key, driver_number, full_name, name_acronym, team_name, year)
+                    VALUES ($1, $2, $3, $4, $5, $6)
                     ON CONFLICT (session_key, driver_number) DO UPDATE SET
                         full_name = EXCLUDED.full_name,
                         name_acronym = EXCLUDED.name_acronym,
-                        team_name = EXCLUDED.team_name
+                        team_name = EXCLUDED.team_name,
+                        year = EXCLUDED.year
                     """,
-                    session_key, entry.driver_number, entry.full_name, entry.tla, entry.team_name,
+                    session_key, entry.driver_number, entry.full_name, entry.tla, entry.team_name, year,
                 )
-    logger.info("Persisted confirmed driver roster session_key=%s count=%d", session_key, len(entries))
+    logger.info("Persisted confirmed driver roster session_key=%s year=%s count=%d", session_key, year, len(entries))

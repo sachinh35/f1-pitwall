@@ -35,6 +35,7 @@ from api_pydantic_models.race_control import GetSessionRaceControlEventsResponse
 from api_pydantic_models.race_sesssions import GetAllSessionTypesResponse, GetSessionResultsResponse, SessionType
 from api_pydantic_models.races import GetAvailableYearsResponse, GetRacesForYearsResponse
 from api_pydantic_models.stints import GetSessionStintsResponse
+from constants.season import CURRENT_SEASON_YEAR
 from utils import f1_auth, lap_data, lap_telemetry_db, live_stream, live_tail, race_control, race_session, replay, stints, team_radio_db
 from utils.database import DatabaseManager
 from utils.lap_comparison import build_lap_trace, compute_delta_trace
@@ -42,8 +43,6 @@ from utils.live_session_pipeline import get_pipeline
 from utils.live_stream import STREAM_LOGS_DIR
 from utils.team_driver_pool_db import get_team_driver_pool
 from utils.team_radio_pipeline import AUDIO_CACHE_DIR
-
-CURRENT_SEASON_YEAR: int = 2026
 
 logging.basicConfig(
     level=logging.INFO,
