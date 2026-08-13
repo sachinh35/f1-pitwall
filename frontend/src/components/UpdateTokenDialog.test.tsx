@@ -51,6 +51,16 @@ describe("UpdateTokenDialog", () => {
         expect(screen.getByLabelText("F1TV JWT token")).toBeInTheDocument();
     });
 
+    it("falls back to a generic invalid-token message when the server gives no reason", async () => {
+        mockedUpdateF1TvToken.mockResolvedValue({ valid: false });
+        render(<UpdateTokenDialog open onClose={vi.fn()} onValidated={vi.fn()} reason={null} />);
+
+        fireEvent.change(screen.getByLabelText("F1TV JWT token"), { target: { value: "bad.jwt.token" } });
+        fireEvent.click(screen.getByRole("button", { name: "I've updated the token" }));
+
+        await waitFor(() => expect(screen.getByText("Token is not valid.")).toBeInTheDocument());
+    });
+
     it("a thrown/network error shows a generic error and keeps the dialog open", async () => {
         mockedUpdateF1TvToken.mockRejectedValue(new Error("network down"));
         const onValidated = vi.fn();

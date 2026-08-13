@@ -21,6 +21,24 @@ describe("TyreStintIndicator", () => {
     expect(document.querySelector(".tyre-stint-badge")).toBeNull();
   });
 
+  it('renders a "?" chip letter for a stint whose compound is literally "unknown"', () => {
+    render(<TyreStintIndicator stints={[{ compound: "unknown", laps: 5 }]} />);
+    expect(screen.getByText("?")).toBeInTheDocument();
+  });
+
+  it("gives a predicted stint with 0 (unknown) predicted laps a minimum visual width instead of collapsing", () => {
+    const prediction: TyreStrategyPredictionWire = {
+      ...SAMPLE_PREDICTION,
+      predicted_stints: [{ stint_number: 1, compound: "hard", predicted_total_laps: 0 }],
+    };
+    const { container } = render(
+      <TyreStintIndicator stints={[{ compound: "hard", laps: 8 }]} prediction={prediction} />
+    );
+    fireEvent.mouseEnter(container.querySelector(".tyre-stint-badge")!);
+    const segment = container.querySelector(".tyre-stint-segment.predicted") as HTMLElement;
+    expect(segment.style.flexGrow).toBe("1");
+  });
+
   it("renders one chip per stint, including repeated compounds", () => {
     render(
       <TyreStintIndicator

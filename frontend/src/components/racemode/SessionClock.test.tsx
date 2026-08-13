@@ -119,6 +119,54 @@ describe("SessionClock", () => {
     expect(screen.getByText("Time Remaining")).toBeInTheDocument();
   });
 
+  it("parses a MM:SS (no hours) Remaining value", () => {
+    render(
+      <SessionClock
+        lapCount={{}}
+        extrapolatedClock={{ Remaining: "05:30", Extrapolating: false }}
+        isQualifying={false}
+        qualifyingPart={null}
+      />
+    );
+    expect(screen.getByText("0:05:30")).toBeInTheDocument();
+  });
+
+  it("ignores a Remaining value with a valid-number but wrong part count (neither H:MM:SS nor MM:SS)", () => {
+    render(
+      <SessionClock
+        lapCount={{}}
+        extrapolatedClock={{ Remaining: "45", Extrapolating: false }}
+        isQualifying={false}
+        qualifyingPart={null}
+      />
+    );
+    expect(screen.getByText("--:--:--")).toBeInTheDocument();
+  });
+
+  it("ignores a malformed Remaining value (leaves the placeholder as-is)", () => {
+    render(
+      <SessionClock
+        lapCount={{}}
+        extrapolatedClock={{ Remaining: "not-a-time", Extrapolating: false }}
+        isQualifying={false}
+        qualifyingPart={null}
+      />
+    );
+    expect(screen.getByText("--:--:--")).toBeInTheDocument();
+  });
+
+  it("does not tick when the interval fires before any Remaining value has anchored the clock", async () => {
+    vi.useFakeTimers();
+    render(
+      <SessionClock lapCount={{}} extrapolatedClock={{ Extrapolating: true }} isQualifying={false} qualifyingPart={null} />
+    );
+    expect(screen.getByText("--:--:--")).toBeInTheDocument();
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(screen.getByText("--:--:--")).toBeInTheDocument();
+  });
+
   describe("anchoring to F1's own Utc timestamp, not render time", () => {
     // Regression coverage for a real bug: anchoring to Date.now() meant a page
     // refresh - which re-delivers the same last-known Remaining value via the SSE

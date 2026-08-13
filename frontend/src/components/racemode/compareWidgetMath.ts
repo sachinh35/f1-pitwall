@@ -119,6 +119,9 @@ export function computeLapValueBounds(
 
   // Nothing but outliers to go on (yet) - fall back to scaling from every point rather than
   // returning a broken (Infinity-bounded) range.
+  /* v8 ignore start -- mathematically unreachable: tukeyFences() only returns non-null when
+   * iqr > 0, in which case Q1/Q3 (derived from these same points) always lie within
+   * [lower, upper] by construction, so at least one point can never be classified an outlier. */
   if (!anyScalingPoints) {
     for (const driverNumber of drivers) {
       const points = perDriverHistory[driverNumber];
@@ -128,6 +131,7 @@ export function computeLapValueBounds(
         if (p.value > maxValue) maxValue = p.value;
       }
     }
+    /* v8 ignore stop */
   }
 
   const valueSpan = maxValue - minValue || 1;

@@ -1,5 +1,5 @@
 import { render } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TrackMap from "./TrackMap";
 import { worldToCanvas } from "./trackMapMath";
 import { PositionSample } from "../../types/raceMode";
@@ -41,5 +41,76 @@ describe("TrackMap", () => {
       <TrackMap positionsRef={emptyRefs.positionsRef} trailRef={emptyRefs.trailRef} selectedDrivers={[]} />
     );
     expect(container.querySelector("canvas.rm-trackmap-canvas")).not.toBeNull();
+  });
+
+  describe("draw loop", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("runs the placeholder branch when there is no trail data yet", () => {
+      const { unmount } = render(
+        <TrackMap positionsRef={emptyRefs.positionsRef} trailRef={emptyRefs.trailRef} selectedDrivers={[]} />
+      );
+      expect(() => vi.advanceTimersByTime(50)).not.toThrow();
+      unmount();
+    });
+
+    it("draws trails and live car markers, including a selected driver's highlighted marker", () => {
+      const positionsRef = {
+        current: {
+          "1": { x: 10, y: 20, z: 0, status: "OnTrack" },
+          "3": { x: 30, y: 40, z: 0, status: "OnTrack" },
+        } as Record<string, PositionSample>,
+      };
+      const trailRef = {
+        current: {
+          "1": [
+            { x: 0, y: 0 },
+            { x: 10, y: 20 },
+          ],
+          "3": [
+            { x: 0, y: 0 },
+            { x: 30, y: 40 },
+          ],
+        },
+      };
+
+      const { unmount } = render(
+        <TrackMap positionsRef={positionsRef} trailRef={trailRef} selectedDrivers={[1]} />
+      );
+      expect(() => vi.advanceTimersByTime(50)).not.toThrow();
+      unmount();
+    });
+
+    it("cleans up the resize listener and animation frame on unmount without throwing", () => {
+      const { unmount } = render(
+        <TrackMap positionsRef={emptyRefs.positionsRef} trailRef={emptyRefs.trailRef} selectedDrivers={[]} />
+      );
+      vi.advanceTimersByTime(20);
+      expect(() => unmount()).not.toThrow();
+    });
+
+    it("skips drawing a trail with fewer than 2 accumulated points", () => {
+      const positionsRef = {
+        current: { "1": { x: 10, y: 20, z: 0, status: "OnTrack" } } as Record<string, PositionSample>,
+      };
+      const trailRef = {
+        current: {
+          "1": [{ x: 10, y: 20 }], // only one point - too short to draw a line segment
+          "3": [
+            { x: 0, y: 0 },
+            { x: 30, y: 40 },
+          ],
+        },
+      };
+      const { unmount } = render(<TrackMap positionsRef={positionsRef} trailRef={trailRef} selectedDrivers={[]} />);
+      expect(() => vi.advanceTimersByTime(20)).not.toThrow();
+      unmount();
+    });
   });
 });

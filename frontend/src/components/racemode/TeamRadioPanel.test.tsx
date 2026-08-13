@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import TeamRadioPanel from "./TeamRadioPanel";
 import { TeamRadioClip } from "../../types/raceMode";
@@ -75,6 +75,23 @@ describe("TeamRadioPanel", () => {
     expect(container.querySelector(".radio-msg-notable")).toBeNull();
   });
 
+  it.each([
+    ["pending", /incoming/i],
+    ["downloading", /downloading/i],
+    ["downloaded", /playable.*transcribing/i],
+    ["transcribing", /transcribing/i],
+    ["failed_download", /download failed/i],
+    ["failed_transcription", /transcription failed/i],
+  ] as const)("shows the right status text for a %s clip with no transcript yet", (status, expectedText) => {
+    render(<TeamRadioPanel clips={[makeClip({ status, transcript: null })]} />);
+    expect(screen.getByText(expectedText)).toBeInTheDocument();
+  });
+
+  it("shows no status text for a 'done' clip with no transcript (falls through to the default case)", () => {
+    const { container } = render(<TeamRadioPanel clips={[makeClip({ status: "done", transcript: null })]} />);
+    expect(container.querySelector(".radio-status")?.textContent).toBe("");
+  });
+
   it("disables the play button while a clip is not yet playable", () => {
     render(<TeamRadioPanel clips={[makeClip({ status: "downloading", transcript: null })]} />);
     const button = screen.getByRole("button");
@@ -140,6 +157,39 @@ describe("TeamRadioPanel", () => {
     expect(pauseSpy).toHaveBeenCalledTimes(1);
     expect(playSpy).not.toHaveBeenCalled(); // never played a second time
     expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
+  });
+
+  it("an 'ended' event only clears playingId if that clip is still the one playing", () => {
+    const endedCallbacks: (() => void)[] = [];
+    const addEventListenerSpy = vi
+      .spyOn(window.HTMLMediaElement.prototype, "addEventListener")
+      .mockImplementation((type, cb) => {
+        if (type === "ended") endedCallbacks.push(cb as () => void);
+      });
+
+    render(
+      <TeamRadioPanel
+        clips={[
+          makeClip({ id: 1, driver_number: 3, ts: "2026-07-23T12:00:00Z" }),
+          makeClip({ id: 2, driver_number: 16, ts: "2026-07-23T12:05:00Z" }),
+        ]}
+      />
+    );
+    const [secondButton, firstButton] = screen.getAllByRole("button"); // clip 2 (LEC), clip 1 (VER)
+
+    fireEvent.click(secondButton); // playingId = 2, registers endedCallbacks[0] for clip 2
+    fireEvent.click(firstButton); // stops clip 2, plays clip 1 -> playingId = 1, endedCallbacks[1] for clip 1
+
+    // Clip 2's audio naturally firing "ended" after being superseded must not touch playingId
+    // (still 1) - the stale-id guard branch.
+    act(() => endedCallbacks[0]());
+    expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument(); // clip 1 still "playing"
+
+    // Clip 1's own "ended" event does clear it.
+    act(() => endedCallbacks[1]());
+    expect(screen.queryByRole("button", { name: "Pause" })).not.toBeInTheDocument();
+
+    addEventListenerSpy.mockRestore();
   });
 
   it("playing a second clip stops the first - never two clips playing at once", () => {

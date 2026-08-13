@@ -48,6 +48,17 @@ describe("RadioIndicator", () => {
     expect(screen.getByText("LAP 12")).toBeInTheDocument();
   });
 
+  it("hides the transcript again on mouse leave", () => {
+    render(<RadioIndicator clips={[makeClip({})]} />);
+    const badge = screen.getByTitle(/team radio/i);
+
+    fireEvent.mouseEnter(badge);
+    expect(screen.getByText(/box this lap/i)).toBeInTheDocument();
+
+    fireEvent.mouseLeave(badge);
+    expect(screen.queryByText(/box this lap/i)).not.toBeInTheDocument();
+  });
+
   it("reveals the transcript on keyboard focus as well as hover", () => {
     render(<RadioIndicator clips={[makeClip({})]} />);
     const badge = screen.getByTitle(/team radio/i);

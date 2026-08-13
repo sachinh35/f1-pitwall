@@ -1,6 +1,6 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import CompareWidget from "./CompareWidget";
 import {
   clampedLapPointToCanvas,
@@ -316,6 +316,258 @@ describe("lapLabelStep", () => {
     expect(lapLabelStep(13)).toBe(2);
     expect(lapLabelStep(24)).toBe(2);
     expect(lapLabelStep(60)).toBe(5);
+  });
+});
+
+describe("CompareWidget canvas draw loop", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("draws the placeholder when no drivers are selected", () => {
+    const { unmount } = renderWidget({ selectedDrivers: [] });
+    expect(() => vi.advanceTimersByTime(20)).not.toThrow();
+    unmount();
+  });
+
+  it("draws the 'waiting for lap data' placeholder for a discrete metric with no history yet", () => {
+    const { unmount } = renderWidget({ metric: "sector1", selectedDrivers: [44] });
+    expect(() => vi.advanceTimersByTime(20)).not.toThrow();
+    unmount();
+  });
+
+  it("draws discrete series, gridlines, and a muted off-scale segment when an outlier point exists", () => {
+    const lapMetricHistoryRef = {
+      current: {
+        sector1: {
+          44: [
+            { lap: 1, value: 28.0 },
+            { lap: 2, value: 27.5 },
+            { lap: 3, value: 46.2 },
+            { lap: 4, value: 27.9 },
+            { lap: 5, value: 27.7 },
+            { lap: 6, value: 28.1 },
+            { lap: 7, value: 27.6 },
+          ],
+        },
+        sector2: {},
+        sector3: {},
+        lapTime: {},
+      } as Record<DiscreteCompareMetric, Record<number, LapMetricPoint[]>>,
+    };
+    const { unmount } = renderWidget({
+      metric: "sector1",
+      selectedDrivers: [44],
+      lapMetricHistoryRef,
+    });
+    expect(() => vi.advanceTimersByTime(20)).not.toThrow();
+    unmount();
+  });
+
+  it("draws a continuous (speed) series and lap-boundary ticks across multiple frames", () => {
+    const telemetryRef = {
+      current: {
+        "44": { speed_kmh: 300, rpm: 11000, gear: 7, throttle_pct: 95, brake_pct: 0, drs: 0 },
+      } as Record<string, TelemetrySample>,
+    };
+    const currentLapRef = { current: { 44: 3 } };
+
+    const { unmount } = renderWidget({
+      metric: "speed",
+      selectedDrivers: [44],
+      telemetryRef,
+      currentLapRef,
+    });
+
+    vi.advanceTimersByTime(20);
+    // A new sample object (and a new current lap) on the next frame - the effect only pushes
+    // history when the sample reference changes, and a lap-boundary tick needs two distinct
+    // lap tags in the rolling window.
+    telemetryRef.current = {
+      "44": { speed_kmh: 310, rpm: 11500, gear: 8, throttle_pct: 98, brake_pct: 0, drs: 1 },
+    };
+    currentLapRef.current = { 44: 4 };
+    expect(() => vi.advanceTimersByTime(20)).not.toThrow();
+    unmount();
+  });
+
+  it("cleans up the resize listener and animation frame on unmount without throwing", () => {
+    const { unmount } = renderWidget({ selectedDrivers: [44] });
+    vi.advanceTimersByTime(20);
+    expect(() => unmount()).not.toThrow();
+  });
+
+  it("skips a selected driver with no discrete history yet without throwing", () => {
+    const lapMetricHistoryRef = {
+      current: {
+        sector1: { 44: [{ lap: 1, value: 28 }] }, // driver 16 has bounds-contributing data...
+        sector2: {},
+        sector3: {},
+        lapTime: {},
+      } as Record<DiscreteCompareMetric, Record<number, LapMetricPoint[]>>,
+    };
+    // ...but driver 16 itself has no points of its own - exercises the discrete draw loop's
+    // "no points for this driver" skip.
+    const { unmount } = renderWidget({ metric: "sector1", selectedDrivers: [44, 16], lapMetricHistoryRef });
+    expect(() => vi.advanceTimersByTime(20)).not.toThrow();
+    unmount();
+  });
+
+  it("labels a shared lap-boundary crossing only once across multiple drivers", () => {
+    const telemetryRef = {
+      current: {
+        "44": { speed_kmh: 300, rpm: 11000, gear: 7, throttle_pct: 95, brake_pct: 0, drs: 0 },
+        "16": { speed_kmh: 290, rpm: 10800, gear: 7, throttle_pct: 90, brake_pct: 0, drs: 0 },
+      } as Record<string, TelemetrySample>,
+    };
+    const currentLapRef = { current: { 44: 3, 16: 3 } };
+
+    const { unmount } = renderWidget({
+      metric: "speed",
+      selectedDrivers: [44, 16],
+      telemetryRef,
+      currentLapRef,
+    });
+    vi.advanceTimersByTime(20);
+    // Both drivers cross into lap 4 on the same frame - the second driver's boundary tick
+    // hits the "already labeled this lap" dedup branch.
+    telemetryRef.current = {
+      "44": { speed_kmh: 305, rpm: 11200, gear: 7, throttle_pct: 96, brake_pct: 0, drs: 0 },
+      "16": { speed_kmh: 295, rpm: 10900, gear: 7, throttle_pct: 91, brake_pct: 0, drs: 0 },
+    };
+    currentLapRef.current = { 44: 4, 16: 4 };
+    expect(() => vi.advanceTimersByTime(20)).not.toThrow();
+    unmount();
+  });
+
+  it("trims continuous history/lap-tag buffers once they exceed the rolling window", () => {
+    const telemetryRef = {
+      current: { "44": { speed_kmh: 300, rpm: 11000, gear: 7, throttle_pct: 95, brake_pct: 0, drs: 0 } } as Record<
+        string,
+        TelemetrySample
+      >,
+    };
+    const currentLapRef = { current: { 44: 1 } };
+
+    const { unmount } = renderWidget({ metric: "speed", selectedDrivers: [44], telemetryRef, currentLapRef });
+
+    // MAX_HISTORY is 300 - push past it so the buffer-trim branch (history.shift()) runs.
+    for (let i = 0; i < 305; i++) {
+      telemetryRef.current = {
+        "44": { speed_kmh: 300 + i, rpm: 11000, gear: 7, throttle_pct: 95, brake_pct: 0, drs: 0 },
+      };
+      currentLapRef.current = { 44: 1 + (i % 3) };
+      vi.advanceTimersByTime(20);
+    }
+    expect(() => unmount()).not.toThrow();
+  });
+
+  it("does not draw an emphasis dot when the most recent discrete point is itself off-scale", () => {
+    const lapMetricHistoryRef = {
+      current: {
+        sector1: {
+          44: [
+            { lap: 1, value: 28.0 },
+            { lap: 2, value: 27.5 },
+            { lap: 3, value: 27.9 },
+            { lap: 4, value: 27.7 },
+            { lap: 5, value: 28.1 },
+            { lap: 6, value: 27.6 },
+            { lap: 7, value: 46.2 }, // outlier, and the most recent point
+          ],
+        },
+        sector2: {},
+        sector3: {},
+        lapTime: {},
+      } as Record<DiscreteCompareMetric, Record<number, LapMetricPoint[]>>,
+    };
+    const { unmount } = renderWidget({ metric: "sector1", selectedDrivers: [44], lapMetricHistoryRef });
+    expect(() => vi.advanceTimersByTime(20)).not.toThrow();
+    unmount();
+  });
+
+  it("tags a continuous sample with the unknown-lap sentinel when no current-lap data has arrived yet for that driver", () => {
+    const telemetryRef = {
+      current: { "44": { speed_kmh: 300, rpm: 11000, gear: 7, throttle_pct: 95, brake_pct: 0, drs: 0 } } as Record<
+        string,
+        TelemetrySample
+      >,
+    };
+    const currentLapRef = { current: {} }; // no entry for driver 44
+    const { unmount } = renderWidget({ metric: "speed", selectedDrivers: [44], telemetryRef, currentLapRef });
+    expect(() => vi.advanceTimersByTime(20)).not.toThrow();
+    unmount();
+  });
+
+  it.each(["throttle", "brake"] as const)("draws a continuous %s series across two frames without throwing", (metric) => {
+    const telemetryRef = {
+      current: {
+        "44": { speed_kmh: 300, rpm: 11000, gear: 7, throttle_pct: 80, brake_pct: 5, drs: 0 },
+      } as Record<string, TelemetrySample>,
+    };
+    const currentLapRef = { current: { 44: 1 } };
+
+    const { unmount } = renderWidget({ metric, selectedDrivers: [44], telemetryRef, currentLapRef });
+    vi.advanceTimersByTime(20);
+    telemetryRef.current = {
+      "44": { speed_kmh: 305, rpm: 11200, gear: 7, throttle_pct: 85, brake_pct: 10, drs: 0 },
+    };
+    expect(() => vi.advanceTimersByTime(20)).not.toThrow();
+    unmount();
+  });
+
+  it("shows an event marker over the continuous (speed) chart once telemetry has tagged a matching lap", async () => {
+    const telemetryRef = {
+      current: { "44": { speed_kmh: 300, rpm: 11000, gear: 7, throttle_pct: 95, brake_pct: 0, drs: 0 } } as Record<
+        string,
+        TelemetrySample
+      >,
+    };
+    const currentLapRef = { current: { 44: 5 } };
+    const driverEventsRef = {
+      current: { 44: [{ lap: 5, kind: "pit", label: "Pit stop (lap 5)" }] as DriverEventMarker[] },
+    };
+
+    renderWidget({ metric: "speed", selectedDrivers: [44], telemetryRef, currentLapRef, driverEventsRef });
+    act(() => {
+      vi.advanceTimersByTime(20);
+    });
+    // The marker-overlay effect polls independently on its own interval - advancing past it
+    // triggers the setEventMarkers state update, which needs an act() flush to observe.
+    act(() => {
+      vi.advanceTimersByTime(350);
+    });
+
+    expect(screen.getByTitle("Pit stop (lap 5)")).toBeInTheDocument();
+  });
+
+  it("colors a tyre-change marker by compound and a penalty marker with the shared warning tint", () => {
+    const lapMetricHistoryRef = {
+      current: {
+        sector1: {
+          44: [{ lap: 1, value: 28 }],
+          16: [{ lap: 1, value: 27 }],
+        },
+        sector2: {},
+        sector3: {},
+        lapTime: {},
+      } as Record<DiscreteCompareMetric, Record<number, LapMetricPoint[]>>,
+    };
+    const driverEventsRef = {
+      current: {
+        44: [{ lap: 1, kind: "tyre", compound: "soft", label: "Fitted SOFT" }] as DriverEventMarker[],
+        16: [{ lap: 1, kind: "penalty", label: "5 SECOND PENALTY" }] as DriverEventMarker[],
+      },
+    };
+
+    renderWidget({ metric: "sector1", selectedDrivers: [44, 16], lapMetricHistoryRef, driverEventsRef });
+
+    expect(screen.getByTitle(/Fitted SOFT/)).toBeInTheDocument();
+    expect(screen.getByTitle(/5 SECOND PENALTY/)).toBeInTheDocument();
   });
 });
 

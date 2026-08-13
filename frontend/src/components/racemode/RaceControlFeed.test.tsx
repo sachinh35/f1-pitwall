@@ -41,6 +41,40 @@ describe("RaceControlFeed", () => {
     expect(screen.getByText("GREEN LIGHT")).toBeInTheDocument();
   });
 
+  it('renders an empty time for an entry with no Utc field', () => {
+    render(<RaceControlFeed messages={{ "1": { Category: "Flag", Message: "GREEN LIGHT" } }} />);
+    expect(screen.getByText("GREEN LIGHT")).toBeInTheDocument();
+  });
+
+  it("falls back to the raw string for an unparseable Utc value", () => {
+    render(
+      <RaceControlFeed messages={{ "1": { Utc: "not-a-real-timestamp", Category: "Flag", Message: "GREEN LIGHT" } }} />
+    );
+    expect(screen.getByText("not-a-real-timestamp")).toBeInTheDocument();
+  });
+
+  it("uses a Utc value verbatim (as UTC) when it already carries an explicit offset/Z suffix", () => {
+    render(
+      <RaceControlFeed messages={{ "1": { Utc: "2025-11-30T15:57:04Z", Category: "Flag", Message: "GREEN LIGHT" } }} />
+    );
+    expect(screen.getByText("10:57")).toBeInTheDocument();
+  });
+
+  it('defaults the category badge to "Info" when Category is missing', () => {
+    render(<RaceControlFeed messages={{ "1": { Utc: "2025-11-30T15:57:04", Message: "SESSION STARTED" } }} />);
+    expect(screen.getByText("Info", { selector: ".cat" })).toBeInTheDocument();
+  });
+
+  it("renders empty message text when neither Message nor Status is present", () => {
+    const { container } = render(<RaceControlFeed messages={{ "1": { Utc: "2025-11-30T15:57:04", Category: "Other" } }} />);
+    expect(container.querySelector(".m")?.textContent).toBe("");
+  });
+
+  it("falls back to Status text when Message is absent", () => {
+    render(<RaceControlFeed messages={{ "1": { Utc: "2025-11-30T15:57:04", Category: "Other", Status: "TRACK CLEAR" } }} />);
+    expect(screen.getByText("TRACK CLEAR")).toBeInTheDocument();
+  });
+
   it("renders a lap marker when the entry carries a Lap number", () => {
     render(
       <RaceControlFeed
@@ -109,6 +143,16 @@ describe("RaceControlFeed", () => {
       fireEvent.click(screen.getByRole("button", { name: /^Other/ }));
 
       expect(screen.getByText(/no events match the selected filters/i)).toBeInTheDocument();
+    });
+
+    it("re-selecting a single previously-toggled-off category chip shows its messages again", () => {
+      render(<RaceControlFeed messages={mixedMessages} />);
+      const flagChip = screen.getByRole("button", { name: /^Flag/ });
+      fireEvent.click(flagChip);
+      expect(screen.queryByText("YELLOW FLAG")).not.toBeInTheDocument();
+
+      fireEvent.click(flagChip);
+      expect(screen.getByText("YELLOW FLAG")).toBeInTheDocument();
     });
 
     it("clicking All re-selects every category", () => {

@@ -72,6 +72,22 @@ describe("connectRaceModeStream", () => {
     consoleError.mockRestore();
   });
 
+  it("logs a warning on error only once the connection's readyState is CLOSED", () => {
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    connectRaceModeStream("stream-1", {});
+    const source = MockEventSource.instances[0];
+
+    source.readyState = 1; // CONNECTING/OPEN - EventSource will retry on its own
+    source.onerror?.();
+    expect(consoleWarn).not.toHaveBeenCalled();
+
+    source.readyState = MockEventSource.CLOSED;
+    source.onerror?.();
+    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining("stream-1"));
+
+    consoleWarn.mockRestore();
+  });
+
   it("returns a cleanup function that closes the underlying connection", () => {
     const disconnect = connectRaceModeStream("stream-1", {});
     const source = MockEventSource.instances[0];

@@ -250,6 +250,10 @@ describe("extractPenaltyDriverNumber", () => {
   it("returns null when no car number is present", () => {
     expect(extractPenaltyDriverNumber("FIA STEWARDS: UNDER INVESTIGATION")).toBeNull();
   });
+
+  it("returns null for a matched number so large it overflows to a non-finite value", () => {
+    expect(extractPenaltyDriverNumber(`CAR ${"9".repeat(400)}`)).toBeNull();
+  });
 });
 
 describe("formatPenaltyLabel", () => {

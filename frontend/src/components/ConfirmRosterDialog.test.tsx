@@ -83,6 +83,80 @@ describe("ConfirmRosterDialog", () => {
         expect(within(row).getByLabelText("McLaren TLA")).toHaveValue("");
     });
 
+    it("clicking Change for a team with no reserves on file jumps straight to a blank custom entry", async () => {
+        mockedGetTeamDriverPool.mockResolvedValue(buildPool());
+        render(<ConfirmRosterDialog open onClose={vi.fn()} onConfirm={vi.fn()} />);
+        await waitFor(() => expect(screen.getByText("Isack Hadjar")).toBeInTheDocument());
+
+        // Racing Bulls has no reserve entries in the pool fixture.
+        const row = screen.getByTestId("roster-row-Racing Bulls-6");
+        fireEvent.click(within(row).getByText("Change"));
+
+        expect(within(row).getByPlaceholderText("Full name")).toHaveValue("");
+        expect(within(row).getByLabelText("Racing Bulls driver number")).toHaveValue(null);
+    });
+
+    it("switching to Custom for a team that does have reserves clears the fields, and typing a name updates it", async () => {
+        mockedGetTeamDriverPool.mockResolvedValue(buildPool());
+        render(<ConfirmRosterDialog open onClose={vi.fn()} onConfirm={vi.fn()} />);
+        await waitFor(() => expect(screen.getByText("Lando Norris")).toBeInTheDocument());
+
+        const row = screen.getByTestId("roster-row-McLaren-1");
+        fireEvent.click(within(row).getByText("Change"));
+        const select = within(row).getByLabelText("McLaren substitute driver");
+        fireEvent.mouseDown(select);
+        fireEvent.click(within(screen.getByRole("listbox")).getByText("Custom..."));
+
+        const nameField = within(row).getByPlaceholderText("Full name");
+        expect(nameField).toHaveValue("");
+
+        fireEvent.change(nameField, { target: { value: "Test Driver" } });
+        expect(nameField).toHaveValue("Test Driver");
+    });
+
+    it("Reset to default restores a row's original driver info after editing", async () => {
+        mockedGetTeamDriverPool.mockResolvedValue(buildPool());
+        render(<ConfirmRosterDialog open onClose={vi.fn()} onConfirm={vi.fn()} />);
+        await waitFor(() => expect(screen.getByText("Lando Norris")).toBeInTheDocument());
+
+        const row = screen.getByTestId("roster-row-McLaren-1");
+        fireEvent.click(within(row).getByText("Change"));
+        expect(within(row).getByLabelText("McLaren substitute driver")).toBeInTheDocument();
+
+        fireEvent.click(within(row).getByText("Reset to default"));
+
+        expect(within(row).queryByLabelText("McLaren substitute driver")).not.toBeInTheDocument();
+        expect(screen.getByText("Lando Norris")).toBeInTheDocument();
+    });
+
+    it("selecting a reserve that does have a driver number on file fills it in", async () => {
+        mockedGetTeamDriverPool.mockResolvedValue(buildPool());
+        render(<ConfirmRosterDialog open onClose={vi.fn()} onConfirm={vi.fn()} />);
+        await waitFor(() => expect(screen.getByText("Max Verstappen")).toBeInTheDocument());
+
+        const row = screen.getByTestId("roster-row-Red Bull Racing-3");
+        fireEvent.click(within(row).getByText("Change"));
+        const select = within(row).getByLabelText("Red Bull Racing substitute driver");
+        fireEvent.mouseDown(select);
+        fireEvent.click(within(screen.getByRole("listbox")).getByText("Yuki Tsunoda"));
+
+        expect(within(row).getByLabelText("Red Bull Racing driver number")).toHaveValue(22);
+    });
+
+    it("renders a blank TLA/driver number when a seat's pool entry is itself missing them", async () => {
+        mockedGetTeamDriverPool.mockResolvedValue({
+            season_year: 2026,
+            drivers: [
+                { team_name: "TBD Team", driver_number: null, tla: null, full_name: "Driver TBD", is_reserve: false },
+            ],
+        });
+        render(<ConfirmRosterDialog open onClose={vi.fn()} onConfirm={vi.fn()} />);
+        await waitFor(() => expect(screen.getByText("Driver TBD")).toBeInTheDocument());
+
+        const row = screen.getByTestId("roster-row-TBD Team-null");
+        expect(within(row).getByText("Change")).toBeInTheDocument();
+    });
+
     it("Confirm & Start is disabled until every edited row is valid, then enables once filled in", async () => {
         mockedGetTeamDriverPool.mockResolvedValue(buildPool());
         render(<ConfirmRosterDialog open onClose={vi.fn()} onConfirm={vi.fn()} />);

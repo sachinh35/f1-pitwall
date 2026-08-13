@@ -27,12 +27,14 @@ interface DriverInfo {
 
 type ChartTooltipPayloadEntry = NonNullable<TooltipProps<number, string>['payload']>[number];
 
-interface CustomTooltipProps extends TooltipProps<number, string> {
+export interface CustomTooltipProps extends TooltipProps<number, string> {
     driverInfo: DriverInfo[];
 }
 
-// Custom tooltip component to show pit out lap info and compound
-const CustomTooltip = ({ active, payload, label, driverInfo }: CustomTooltipProps) => {
+// Custom tooltip component to show pit out lap info and compound. Exported (only) so it can be
+// unit-tested directly - recharts only ever renders it in response to its own internal mouse
+// hit-testing, which real browsers perform via actual layout and jsdom cannot reproduce.
+export const CustomTooltip = ({ active, payload, label, driverInfo }: CustomTooltipProps) => {
     if (active && payload && payload.length) {
         return (
             <Box

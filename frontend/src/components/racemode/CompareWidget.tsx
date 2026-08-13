@@ -162,8 +162,10 @@ const CompareWidget: React.FC<CompareWidgetProps> = ({
     lapTagRef.current = {};
 
     const canvas = canvasRef.current;
+    /* v8 ignore next -- canvasRef is always set once this effect runs post-mount; defensive only */
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
+    /* v8 ignore next -- jsdom's canvas mock (see setupTests.ts) always returns a 2d context; defensive only */
     if (!ctx) return;
 
     let rafId: number;
@@ -431,6 +433,7 @@ const CompareWidget: React.FC<CompareWidgetProps> = ({
   // MARKER_REFRESH_INTERVAL_MS) since events change far less often than telemetry.
   useEffect(() => {
     const canvas = canvasRef.current;
+    /* v8 ignore next -- canvasRef is always set once this effect runs post-mount; defensive only */
     if (!canvas) return;
 
     const drivers = selectedDrivers.slice(0, 4);

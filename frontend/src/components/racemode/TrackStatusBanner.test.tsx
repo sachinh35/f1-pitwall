@@ -20,6 +20,21 @@ describe("TrackStatusBanner", () => {
     expect(screen.getByText("50.0%")).toBeInTheDocument();
   });
 
+  it('classifies status "1" as green (all clear)', () => {
+    const { container } = render(<TrackStatusBanner trackStatus={{ Status: "1", Message: "AllClear" }} weather={{}} />);
+    expect(container.querySelector(".status-green")).not.toBeNull();
+  });
+
+  it.each(["6", "7"])("classifies status %s as yellow (VSC/other yellow-flag codes)", (status) => {
+    const { container } = render(<TrackStatusBanner trackStatus={{ Status: status, Message: "VSC" }} weather={{}} />);
+    expect(container.querySelector(".status-yellow")).not.toBeNull();
+  });
+
+  it.each(["4", "5"])('classifies status %s as red', (status) => {
+    const { container } = render(<TrackStatusBanner trackStatus={{ Status: status, Message: "Red Flag" }} weather={{}} />);
+    expect(container.querySelector(".status-red")).not.toBeNull();
+  });
+
   it("shows Wet only when Rainfall is exactly \"1\"", () => {
     const { rerender } = render(<TrackStatusBanner trackStatus={{}} weather={{ Rainfall: "0" }} />);
     expect(screen.getByText("Dry")).toBeInTheDocument();

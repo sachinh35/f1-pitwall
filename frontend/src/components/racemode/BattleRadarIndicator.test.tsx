@@ -50,6 +50,24 @@ describe("BattleRadarIndicator", () => {
     expect(document.querySelector(".recharts-wrapper")).not.toBeNull();
   });
 
+  it("uses the amber (not red) chart line color for an upcoming (not yet imminent) battle", () => {
+    const upcomingAlert: BattleRadarAlert = { ...baseAlert, alert_level: "upcoming" };
+    render(<BattleRadarIndicator alert={upcomingAlert} />);
+    fireEvent.mouseEnter(screen.getByTitle(/battle forming/i));
+    expect(document.querySelector(".recharts-line-curve")).toHaveAttribute("stroke", "var(--amber)");
+  });
+
+  it("hides the popover again on mouse leave", () => {
+    render(<BattleRadarIndicator alert={baseAlert} />);
+    const badge = screen.getByTitle(/battle imminent/i);
+
+    fireEvent.mouseEnter(badge);
+    expect(screen.getByText("1.05s")).toBeInTheDocument();
+
+    fireEvent.mouseLeave(badge);
+    expect(screen.queryByText("1.05s")).not.toBeInTheDocument();
+  });
+
   it("shows the popover on keyboard focus as well as hover", () => {
     render(<BattleRadarIndicator alert={baseAlert} />);
     const badge = screen.getByTitle(/battle imminent/i);

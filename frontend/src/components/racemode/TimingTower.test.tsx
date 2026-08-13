@@ -67,6 +67,194 @@ describe("TimingTower", () => {
     expect(onToggle).toHaveBeenCalledWith(3);
   });
 
+  it("shows PIT for a driver currently in the pit lane", () => {
+    render(
+      <TimingTower
+        drivers={{ "3": { Position: "1", InPit: true } }}
+        timingAppData={{}}
+        timingStats={{}}
+        selectedDrivers={[]}
+        onToggleDriver={vi.fn()}
+        battleRadar={{}}
+        tyreStrategyPredictions={{}}
+        teamRadioClips={[]}
+        isQualifying={false}
+        eliminatedDrivers={[]}
+        qualifyingGaps={{}}
+      />
+    );
+    expect(screen.getByText("PIT")).toBeInTheDocument();
+  });
+
+  it("sorts drivers with no/invalid Position to the back of the field", () => {
+    render(
+      <TimingTower
+        drivers={{ "3": { Position: "1" }, "44": {} }}
+        timingAppData={{}}
+        timingStats={{}}
+        selectedDrivers={[]}
+        onToggleDriver={vi.fn()}
+        battleRadar={{}}
+        tyreStrategyPredictions={{}}
+        teamRadioClips={[]}
+        isQualifying={false}
+        eliminatedDrivers={[]}
+        qualifyingGaps={{}}
+      />
+    );
+    const rows = document.querySelectorAll(".tower-row:not(.tower-header)");
+    expect(rows[0].textContent).toContain("VER"); // Position "1" sorts first
+    expect(rows[1].querySelector(".pos")?.textContent).toBe("-"); // no Position -> shown as "-"
+  });
+
+  it("sorts a driver with no Position to the back even when listed first", () => {
+    render(
+      <TimingTower
+        drivers={{ "44": {}, "1": {}, "3": { Position: "1" } }}
+        timingAppData={{}}
+        timingStats={{}}
+        selectedDrivers={[]}
+        onToggleDriver={vi.fn()}
+        battleRadar={{}}
+        tyreStrategyPredictions={{}}
+        teamRadioClips={[]}
+        isQualifying={false}
+        eliminatedDrivers={[]}
+        qualifyingGaps={{}}
+      />
+    );
+    const rows = document.querySelectorAll(".tower-row:not(.tower-header)");
+    expect(rows[0].textContent).toContain("VER");
+  });
+
+  it("marks an eliminated driver's row visually distinct with an explanatory title", () => {
+    render(
+      <TimingTower
+        drivers={{ "3": { Position: "1" } }}
+        timingAppData={{}}
+        timingStats={{}}
+        selectedDrivers={[]}
+        onToggleDriver={vi.fn()}
+        battleRadar={{}}
+        tyreStrategyPredictions={{}}
+        teamRadioClips={[]}
+        isQualifying={true}
+        eliminatedDrivers={[3]}
+        qualifyingGaps={{}}
+      />
+    );
+    const row = document.querySelector(".tower-row:not(.tower-header)") as HTMLElement;
+    expect(row.className).toContain("eliminated");
+    expect(row.title).toMatch(/did not advance/i);
+  });
+
+  it("falls back to 'unknown' compound in the qualifying tyre-history chip when a stint has no Compound value", () => {
+    render(
+      <TimingTower
+        drivers={{ "3": { Position: "1" } }}
+        timingAppData={{ "3": { Stints: { "1": { TotalLaps: 5 } } } }}
+        timingStats={{}}
+        selectedDrivers={[]}
+        onToggleDriver={vi.fn()}
+        battleRadar={{}}
+        tyreStrategyPredictions={{}}
+        teamRadioClips={[]}
+        isQualifying={true}
+        eliminatedDrivers={[]}
+        qualifyingGaps={{}}
+      />
+    );
+    const chip = document.querySelector(".tyre-history .tyre-chip-mini.unknown");
+    expect(chip).not.toBeNull();
+    expect(chip?.textContent).toBe("?");
+  });
+
+  it("shows the compound initial in the qualifying tyre-history chip for a known compound", () => {
+    render(
+      <TimingTower
+        drivers={{ "3": { Position: "1" } }}
+        timingAppData={{ "3": { Stints: { "1": { Compound: "SOFT", TotalLaps: 5 } } } }}
+        timingStats={{}}
+        selectedDrivers={[]}
+        onToggleDriver={vi.fn()}
+        battleRadar={{}}
+        tyreStrategyPredictions={{}}
+        teamRadioClips={[]}
+        isQualifying={true}
+        eliminatedDrivers={[]}
+        qualifyingGaps={{}}
+      />
+    );
+    const chip = document.querySelector(".tyre-history .tyre-chip-mini.soft");
+    expect(chip?.textContent).toBe("S");
+  });
+
+  it("marks the selected row with a distinguishing class", () => {
+    render(
+      <TimingTower
+        drivers={{ "3": { Position: "1" } }}
+        timingAppData={{}}
+        timingStats={{}}
+        selectedDrivers={[3]}
+        onToggleDriver={vi.fn()}
+        battleRadar={{}}
+        tyreStrategyPredictions={{}}
+        teamRadioClips={[]}
+        isQualifying={false}
+        eliminatedDrivers={[]}
+        qualifyingGaps={{}}
+      />
+    );
+    const row = document.querySelector(".tower-row:not(.tower-header)") as HTMLElement;
+    expect(row.className).toContain("selected");
+  });
+
+  it("marks a personal-best (but not overall-fastest) lap green", () => {
+    render(
+      <TimingTower
+        drivers={{ "3": { Position: "1", LastLapTime: { Value: "1:25.500", PersonalFastest: true } } }}
+        timingAppData={{}}
+        timingStats={{}}
+        selectedDrivers={[]}
+        onToggleDriver={vi.fn()}
+        battleRadar={{}}
+        tyreStrategyPredictions={{}}
+        teamRadioClips={[]}
+        isQualifying={false}
+        eliminatedDrivers={[]}
+        qualifyingGaps={{}}
+      />
+    );
+    expect(screen.getByText("1:25.500").className).toContain("green");
+  });
+
+  it("groups team radio clips by driver number so a driver's RadioIndicator shows all of theirs", () => {
+    render(
+      <TimingTower
+        drivers={{ "3": { Position: "1" } }}
+        timingAppData={{}}
+        timingStats={{}}
+        selectedDrivers={[]}
+        onToggleDriver={vi.fn()}
+        battleRadar={{}}
+        tyreStrategyPredictions={{}}
+        teamRadioClips={[
+          {
+            id: 1, session_key: 1, driver_number: 3, lap_number: 1, qualifying_part: null,
+            ts: "2026-01-01T00:00:00Z", audio_path: "a.mp3", transcript: "Box box.", status: "done",
+            error: null, transcribed_at: "2026-01-01T00:00:05Z", speaker_role: "pit_wall",
+            is_notable: null, notable_reason: null,
+          },
+        ]}
+        isQualifying={false}
+        eliminatedDrivers={[]}
+        qualifyingGaps={{}}
+      />
+    );
+    fireEvent.mouseEnter(screen.getByTitle(/team radio/i));
+    expect(screen.getByText(/box box/i)).toBeInTheDocument();
+  });
+
   it("marks the fastest lap purple and shows the tyre compound initial (race mode - last lap)", () => {
     render(
       <TimingTower
