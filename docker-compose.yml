@@ -24,10 +24,18 @@ services:
     build: ./backend
     command: ["uv", "run", "python", "-m", "scripts.migrate"]
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
+      # Override via .env to point at a Postgres you already have running
+      # instead of the db service above - e.g. DB_HOST=host.docker.internal
+      # to reach a Postgres running natively on your Mac/Windows host (works
+      # out of the box on Docker Desktop; on Linux add
+      # `extra_hosts: ["host.docker.internal:host-gateway"]` to reach it the
+      # same way). db still starts either way; just point elsewhere and its
+      # data goes unused.
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-5432}
       DB_USER: ${DB_USER:-postgres}
       DB_NAME: ${DB_NAME:-f1-analytics}
+      DB_PASSWORD: ${DB_PASSWORD:-}
     depends_on:
       db:
         condition: service_healthy
@@ -37,10 +45,11 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-5432}
       DB_USER: ${DB_USER:-postgres}
       DB_NAME: ${DB_NAME:-f1-analytics}
+      DB_PASSWORD: ${DB_PASSWORD:-}
       # Optional - only needed for the team-radio "notable message" classifier
       # (utils/radio_analysis.py). Everything else works without it.
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -49,11 +58,6 @@ services:
       # Raw stream captures/replays live here - keep them on the host so a
       # `docker compose down` doesn't lose them.
       - ./backend/stream_logs:/app/stream_logs
-      # Optional: mount a local Whisper model to enable team-radio transcription
-      # (see backend/utils/whisper_transcriber.py). Uncomment and point at your
-      # cached model dir if you have one - the app runs fine without it.
-      # - ~/.cache/openwhispr/whisper-models:/models
-      # environment: WHISPER_MODELS_DIR=/models
     depends_on:
       migrate:
         condition: service_completed_successfully

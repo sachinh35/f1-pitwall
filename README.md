@@ -47,12 +47,15 @@ local Postgres instance either way — `backend/config/database_config.py`
 reads `DB_HOST`/`DB_PORT`/`DB_USER`/`DB_NAME`/`DB_PASSWORD` from the
 environment.
 
-## Team radio transcription (optional)
+## Team radio transcription
 
-Team radio transcription uses a local Whisper model that isn't baked into
-the backend image (~487MB). To enable it, mount your cached model directory
-into the `backend` service in `docker-compose.yml` (see the commented-out
-lines there) and set `WHISPER_MODELS_DIR` accordingly.
+The backend image bakes in the Whisper model (`ggml-small.bin`, ~487MB,
+downloaded at build time from whisper.cpp's own model host) used to
+transcribe team radio clips, so it works out of the box — no separate
+download or volume mount needed. This is also why the backend build takes a
+while and the image is fairly large. Classifying transcripts as
+driver/pit-wall and flagging notable messages (box calls, incidents, etc.)
+is a separate step that needs `GEMINI_API_KEY` set - see `.env.example`.
 
 ---
 
