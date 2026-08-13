@@ -8,4 +8,5 @@ stream_logs/*
 audio_cache/*
 .pytest_cache/
 logs/
+.vite/
 demo/team_radio_sample/audio.mp3
