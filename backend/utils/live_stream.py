@@ -324,7 +324,7 @@ class F1SignalRStreamer:
                 except Exception as e:
                     logger.debug(f"Subscription method {method} failed: {e}")
                     continue
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - the inner per-method except always continues rather than propagating, so this can't currently be reached; kept as a defensive outer guard
             error_msg = f"Failed to subscribe to events: {str(e)}"
             logger.error(error_msg)
             self.sink.log_event("error", {"error": error_msg, "type": "subscription_error"})
