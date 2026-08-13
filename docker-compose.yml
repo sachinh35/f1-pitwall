@@ -58,6 +58,16 @@ services:
       # Raw stream captures/replays live here - keep them on the host so a
       # `docker compose down` doesn't lose them.
       - ./backend/stream_logs:/app/stream_logs
+      # Downloaded team-radio audio clips, served back out via the /audio
+      # static mount (see main.py) - same reasoning as stream_logs above.
+      - ./backend/audio_cache:/app/audio_cache
+      # The saved F1TV auth token (utils/f1_auth.py's AUTH_DATA_FILE) - lives
+      # under platformdirs.user_data_dir("f1-dashboard"), which resolves to
+      # /root/.local/share/f1-dashboard in this container (confirmed via
+      # `docker exec ... python -c "import platformdirs; ..."`). Without this,
+      # every container recreation would force re-running the browser-based
+      # F1TV login flow again.
+      - ./backend/f1auth_data:/root/.local/share/f1-dashboard
     depends_on:
       migrate:
         condition: service_completed_successfully

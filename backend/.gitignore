@@ -6,6 +6,7 @@
 __pycache__/
 stream_logs/*
 audio_cache/*
+f1auth_data/*
 .pytest_cache/
 logs/
 .vite/
