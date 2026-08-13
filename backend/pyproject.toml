@@ -1,0 +1,43 @@
+[project]
+name = "f1-dashboard-backend"
+version = "0.1.0"
+description = "F1 live dashboard backend"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "requests",
+    "httpx",
+    "asyncpg",
+    "signalrcore",
+    "platformdirs",
+    "pyjwt",
+    "cryptography>=50.0.0",
+    "websockets",
+    "sse-starlette",
+    "pywhispercpp",
+    "numpy",
+    "python-dotenv>=1.2.2",
+    "strands-agents[gemini]>=1.50.1",
+    "strands-agents-tools>=0.8.5",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+]
+
+[tool.uv]
+package = false
+# signalrcore==1.0.2 (latest on PyPI) hard-pins msgpack==1.1.2, which is vulnerable
+# (GHSA-6v7p-g79w-8964, fixed in 1.2.1) - no newer signalrcore release relaxes that pin, so
+# force the patched msgpack via an override instead. msgpack's pack/unpack API signalrcore
+# actually uses is unchanged between 1.1.2 and 1.2.1 (verified: backend test suite passes).
+override-dependencies = ["msgpack>=1.2.1"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
