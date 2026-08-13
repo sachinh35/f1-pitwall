@@ -65,7 +65,7 @@ describe("CustomTooltip", () => {
         render(
             <CustomTooltip
                 {...baseProps({
-                    payload: [{ dataKey: "driver_1", value: null, color: "#F58020", payload: dataPoint({ driver_1: null }) }],
+                    payload: [{ dataKey: "driver_1", value: undefined, color: "#F58020", payload: dataPoint({ driver_1: null }) }],
                 })}
             />
         );

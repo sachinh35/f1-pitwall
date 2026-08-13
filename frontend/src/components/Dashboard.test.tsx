@@ -496,7 +496,7 @@ describe("Dashboard season/location/session selection and results table", () => 
                 meeting_key: 1, session_key: 1, driver_number: 1, lap_number: 1, date_start: null,
                 duration_sector_1: null, duration_sector_2: null, duration_sector_3: null, lap_duration: 90,
                 i1_speed: null, i2_speed: null, st_speed: null, is_pit_out_lap: false,
-                segments_sector_1: null, segments_sector_2: null,
+                segments_sector_1: null, segments_sector_2: null, segments_sector_3: null,
             },
         ]);
 
@@ -518,7 +518,7 @@ describe("Dashboard season/location/session selection and results table", () => 
                 meeting_key: 1, session_key: 1, driver_number: driverNumbers[0], lap_number: 1, date_start: null,
                 duration_sector_1: null, duration_sector_2: null, duration_sector_3: null, lap_duration: 90,
                 i1_speed: null, i2_speed: null, st_speed: null, is_pit_out_lap: false,
-                segments_sector_1: null, segments_sector_2: null,
+                segments_sector_1: null, segments_sector_2: null, segments_sector_3: null,
             },
         ]);
 
@@ -564,7 +564,7 @@ describe("Dashboard season/location/session selection and results table", () => 
                 meeting_key: 1, session_key: 1, driver_number: 1, lap_number: 1, date_start: null,
                 duration_sector_1: null, duration_sector_2: null, duration_sector_3: null, lap_duration: 90,
                 i1_speed: null, i2_speed: null, st_speed: null, is_pit_out_lap: false,
-                segments_sector_1: null, segments_sector_2: null,
+                segments_sector_1: null, segments_sector_2: null, segments_sector_3: null,
             },
         ]);
 

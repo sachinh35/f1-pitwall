@@ -19,6 +19,7 @@ const lap = (overrides: Partial<LapData>): LapData => ({
   is_pit_out_lap: false,
   segments_sector_1: null,
   segments_sector_2: null,
+  segments_sector_3: null,
   ...overrides,
 });
 

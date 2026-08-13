@@ -10,7 +10,6 @@ if (!('ResizeObserver' in globalThis)) {
     unobserve() {}
     disconnect() {}
   }
-  // @ts-expect-error - minimal stub, not the full ResizeObserver interface
   globalThis.ResizeObserver = MockResizeObserver;
 }
 
