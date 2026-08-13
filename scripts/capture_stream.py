@@ -54,7 +54,7 @@ def log_path_for_session(session_name: str) -> Path:
     return STREAM_LOGS_DIR / f"live_{session_name}.jsonl"
 
 
-def run_capture(session_name: str, token: Optional[str] = None) -> None:
+def run_capture(session_name: str, token: Optional[str] = None) -> None:  # pragma: no cover - real threads/signal handlers/infinite loop; unsafe to run inside a test process
     """Blocks forever (until SIGINT/SIGTERM), keeping the archiver's SignalR connection
     alive via F1SignalRStreamer's self-healing reconnect loop."""
     STREAM_LOGS_DIR.mkdir(exist_ok=True)
@@ -91,7 +91,7 @@ def run_capture(session_name: str, token: Optional[str] = None) -> None:
         logger.info("Capture stopped for session=%s", session_name)
 
 
-def main() -> None:
+def main() -> None:  # pragma: no cover - thin CLI entrypoint, delegates straight to run_capture
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
@@ -104,5 +104,5 @@ def main() -> None:
     run_capture(session_name=args.session_name, token=args.token)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - script entrypoint guard
     main()

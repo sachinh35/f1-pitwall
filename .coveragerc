@@ -1,0 +1,11 @@
+[run]
+omit =
+    tests/*
+    # Standalone manual dev/debug scripts - never imported by main.py or any other
+    # production module (confirmed via grep), run ad hoc by a developer at the shell.
+    verify_stream.py
+    debug_auth.py
+    auth_helper.py
+
+[report]
+show_missing = true

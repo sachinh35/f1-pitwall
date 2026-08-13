@@ -100,5 +100,5 @@ async def _main() -> None:
     await DatabaseManager.close_pool()
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - script entrypoint guard
     asyncio.run(_main())
