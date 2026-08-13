@@ -1,0 +1,72 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      # trust auth (no password) on the docker-internal network only, matching
+      # DatabaseConfig's default of "no password" - see backend/config/database_config.py.
+      # Fine for local/dev use; never expose this compose stack's db port publicly as-is.
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_DB: ${DB_NAME:-f1-analytics}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-f1-analytics}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: applies migrations/*.sql, then exits. backend waits for it to
+  # finish successfully before starting.
+  migrate:
+    build: ./backend
+    command: ["uv", "run", "python", "-m", "scripts.migrate"]
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:-postgres}
+      DB_NAME: ${DB_NAME:-f1-analytics}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:-postgres}
+      DB_NAME: ${DB_NAME:-f1-analytics}
+      # Optional - only needed for the team-radio "notable message" classifier
+      # (utils/radio_analysis.py). Everything else works without it.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL_ID: ${GEMINI_MODEL_ID:-}
+    volumes:
+      # Raw stream captures/replays live here - keep them on the host so a
+      # `docker compose down` doesn't lose them.
+      - ./backend/stream_logs:/app/stream_logs
+      # Optional: mount a local Whisper model to enable team-radio transcription
+      # (see backend/utils/whisper_transcriber.py). Uncomment and point at your
+      # cached model dir if you have one - the app runs fine without it.
+      # - ~/.cache/openwhispr/whisper-models:/models
+      # environment: WHISPER_MODELS_DIR=/models
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  # Named volume - survives `docker compose down`, container/image rebuilds,
+  # and `docker rm`. Only `docker compose down -v` (or an explicit
+  # `docker volume rm`) actually deletes the data.
+  pgdata:

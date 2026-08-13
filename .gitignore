@@ -1,0 +1,5 @@
+# Root-level ignores. backend/ and frontend/ each keep their own .gitignore
+# for language-specific artifacts (.venv, node_modules, dist, __pycache__, etc.)
+# - this file only covers things that can appear at the repo root.
+.DS_Store
+.env
