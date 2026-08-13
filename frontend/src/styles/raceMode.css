@@ -1,0 +1,1187 @@
+/*
+  Race Mode visual identity - carries over the dark instrument-panel look
+  designed and iterated on in the product investigation artifact (DIN
+  Condensed display type, amber/teal accents on a graphite ground, timing-
+  tower row styling), rather than inventing a new look. Kept as plain CSS,
+  not MUI - the timing-tower/track-map visual language doesn't map cleanly
+  onto MUI's component set anyway, and this page intentionally looks
+  different from the Garage page, which keeps its existing MUI theme.
+
+  "DIN Condensed" is referenced by name only (a licensed system font on
+  macOS), never bundled - it renders correctly for anyone who has it
+  installed and degrades gracefully to Arial Narrow/sans-serif otherwise.
+*/
+
+.race-mode {
+  --ink-950: #0a0d12;
+  --panel-900: #141922;
+  --panel-850: #171d27;
+  --line-800: #262f3d;
+  --text-hi: #eef2f7;
+  --text-lo: #98a2b3;
+  --text-faint: #5b6472;
+  --amber: #f2a53c;
+  --amber-soft: rgba(242, 165, 60, 0.14);
+  --teal: #35d6c4;
+  --teal-soft: rgba(53, 214, 196, 0.14);
+  --flag-green: #3ecf6e;
+  --flag-yellow: #e8c93a;
+  --flag-red: #e6473f;
+  --flag-purple: #b45cf0;
+
+  min-height: 100vh;
+  background: var(--ink-950);
+  color: var(--text-hi);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  padding: 20px 24px 48px;
+}
+
+.race-mode .display {
+  font-family: "DIN Condensed", "DIN Alternate", "Arial Narrow", sans-serif;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.race-mode .mono {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- header ---- */
+.rm-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+
+.rm-header h1 {
+  font-size: 26px;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rm-live-pill {
+  font-family: "DIN Condensed", "Arial Narrow", sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: #ff6259;
+  border: 1px solid #4a2422;
+  background: #2a1412;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+.rm-live-pill::before {
+  content: "\25CF ";
+}
+
+.rm-session-pill {
+  font-family: "DIN Condensed", "Arial Narrow", sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+.rm-session-pill.qualifying {
+  color: var(--flag-yellow);
+  border: 1px solid #4a3f12;
+  background: #2a2410;
+}
+
+.rm-back-link {
+  color: var(--text-lo);
+  text-decoration: none;
+  font-size: 13px;
+}
+.rm-back-link:hover {
+  color: var(--text-hi);
+}
+
+/* ---- grid layout ---- */
+.rm-grid {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr;
+  gap: 14px;
+}
+@media (max-width: 980px) {
+  .rm-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.rm-panel {
+  background: var(--panel-900);
+  border: 1px solid var(--line-800);
+  border-radius: 10px;
+  padding: 14px 16px;
+  /* Column flex (not just a plain block) so a scrolling child (.radio-chat) can use
+   * flex:1 to fill whatever height the grid actually gives this panel - which varies:
+   * .rm-grid's row-spanning Timing Tower panel can force a sibling row much taller than
+   * its own content, and align-items:stretch (the grid default) stretches .rm-panel to
+   * match. A fixed max-height on the child scroll area doesn't track that, so the panel
+   * border visibly extends past where the scrollable content stops. */
+  display: flex;
+  flex-direction: column;
+}
+
+.rm-panel-label {
+  font-family: "DIN Condensed", "Arial Narrow", sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 12px;
+  color: var(--text-faint);
+  margin-bottom: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.rm-panel-label .n {
+  color: var(--amber);
+}
+
+.rm-span-2 {
+  grid-column: 1 / -1;
+}
+
+/* Right-column panel stack (see RaceMode.tsx) - height is pinned via JS (ResizeObserver
+ * on the Timing Tower panel) to match it exactly; min-height:0 lets that explicit height
+ * actually constrain children instead of being overridden by their content size. */
+.rm-right-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  overflow: hidden;
+}
+/* The one rail panel that absorbs whatever height is left over after its natural-height
+ * siblings (Track Map/Track Status/Telemetry Compare), rather than growing past the rail -
+ * min-height:0 lets it shrink below its message list's full height so .radio-chat's
+ * overflow-y:auto actually activates instead of the panel just growing to fit everything. */
+.rm-panel-fill {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---- timing tower ---- */
+.tower-row {
+  display: grid;
+  grid-template-columns: 24px 30px 1fr 60px 52px 22px 20px 60px 52px 52px 52px 28px 96px 40px 40px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--line-800);
+  cursor: pointer;
+}
+.tower-row.qualifying {
+  grid-template-columns: 24px 30px 1fr 60px 22px 20px 66px 52px 52px 52px 76px 66px 32px;
+}
+.tower-row.tower-header {
+  cursor: default;
+  padding-bottom: 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--line-700, var(--line-800));
+}
+.tower-row.tower-header .gap,
+.tower-row.tower-header .speed-trap {
+  color: var(--text-faint);
+}
+.tower-row:last-child {
+  border-bottom: none;
+}
+.tower-row.eliminated {
+  opacity: 0.45;
+}
+.tower-row.eliminated:hover {
+  opacity: 0.65;
+}
+.out-badge {
+  margin-left: 6px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--flag-red);
+  border: 1px solid #4a2422;
+  background: #2a1412;
+  border-radius: 3px;
+  padding: 1px 4px;
+  vertical-align: middle;
+}
+.tower-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.tower-row.selected {
+  background: var(--teal-soft);
+}
+.tower-row .pos {
+  font-family: "DIN Condensed", "Arial Narrow", sans-serif;
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--text-hi);
+}
+.tower-row .team-bar {
+  width: 4px;
+  height: 18px;
+  border-radius: 2px;
+}
+.tower-row .drv {
+  color: var(--text-hi);
+  font-weight: 600;
+  font-family: ui-monospace, monospace;
+}
+.tower-row .gap {
+  color: var(--text-lo);
+  font-family: ui-monospace, monospace;
+  text-align: right;
+}
+.tower-row .lap {
+  font-family: ui-monospace, monospace;
+  text-align: right;
+}
+.tower-row .lap.purple {
+  color: var(--flag-purple);
+}
+.tower-row .lap.green {
+  color: var(--flag-green);
+}
+.tower-row .lap.plain {
+  color: var(--text-hi);
+}
+.sector {
+  text-align: right;
+  color: var(--text-lo);
+}
+.sector.purple {
+  color: var(--flag-purple);
+}
+.sector.green {
+  color: var(--flag-green);
+}
+.sector.plain {
+  color: var(--text-lo);
+}
+.sector-lap-marker {
+  text-align: left;
+  font-size: 9px;
+  color: var(--text-faint);
+}
+.tyre-history {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  flex-wrap: nowrap;
+  position: relative;
+}
+/* Only qualifying's static (non-popover) chip row needs clipping against the column edge -
+   race mode's TyreStintIndicator popover must be free to render outside the cell's bounds. */
+.tyre-history-qualifying {
+  overflow: hidden;
+}
+.tyre-chip-mini {
+  width: 15px;
+  height: 15px;
+  min-width: 15px;
+  border-radius: 50%;
+  font-size: 8.5px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "DIN Condensed", "Arial Narrow", sans-serif;
+  opacity: 0.55;
+}
+.tyre-chip-mini.current {
+  opacity: 1;
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  font-size: 10px;
+}
+.tyre-chip-mini.soft {
+  background: #4a1418;
+  color: #ff6b6b;
+  border: 1px solid #6b1f24;
+}
+.tyre-chip-mini.medium {
+  background: #4a3a10;
+  color: #f2c94c;
+  border: 1px solid #6b5518;
+}
+.tyre-chip-mini.hard {
+  background: #2a2f38;
+  color: #e7ebf1;
+  border: 1px solid #3d4452;
+}
+.tyre-chip-mini.intermediate {
+  background: #123a1c;
+  color: #52e252;
+  border: 1px solid #1c5c2c;
+}
+.tyre-chip-mini.wet {
+  background: #0f2a4a;
+  color: #64c4ff;
+  border: 1px solid #1c4a7a;
+}
+.tyre-chip-mini.unknown {
+  background: #262f3d;
+  color: var(--text-faint);
+  border: 1px solid var(--line-800);
+}
+
+/* ---- tyre stint popover (race mode only) ---- */
+.tyre-stint-badge {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  cursor: default;
+  outline: none;
+}
+.tyre-stint-popover {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 20;
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--panel-900);
+  border: 1px solid var(--line-800);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  cursor: default;
+  white-space: nowrap;
+}
+.tyre-stint-popover-head {
+  font-size: 11px;
+  color: var(--text-lo);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.tyre-stint-popover-bar {
+  display: flex;
+  align-items: stretch;
+  width: 200px;
+  height: 40px;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--line-800);
+}
+.tyre-stint-segment {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 24px;
+  border-right: 1px solid rgba(0, 0, 0, 0.35);
+  font-family: "DIN Condensed", "Arial Narrow", sans-serif;
+}
+.tyre-stint-segment:last-child {
+  border-right: none;
+}
+.tyre-stint-segment-compound {
+  font-size: 12px;
+  font-weight: 700;
+}
+.tyre-stint-segment-laps {
+  font-size: 9px;
+  font-family: ui-monospace, monospace;
+  opacity: 0.85;
+}
+.tyre-stint-segment.soft {
+  background: #4a1418;
+  color: #ff6b6b;
+}
+.tyre-stint-segment.medium {
+  background: #4a3a10;
+  color: #f2c94c;
+}
+.tyre-stint-segment.hard {
+  background: #2a2f38;
+  color: #e7ebf1;
+}
+.tyre-stint-segment.intermediate {
+  background: #123a1c;
+  color: #52e252;
+}
+.tyre-stint-segment.wet {
+  background: #0f2a4a;
+  color: #64c4ff;
+}
+.tyre-stint-segment.unknown {
+  background: #262f3d;
+  color: var(--text-faint);
+}
+
+/* ---- predicted strategy (Gemini) - dashed/muted, always reads as a forecast, not fact ---- */
+.tyre-stint-popover-head.predicted {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+.tyre-stint-predicted-badge {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: var(--teal, #4fd1c5);
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  padding: 1px 4px;
+  opacity: 0.9;
+}
+.tyre-stint-popover-bar.predicted {
+  border-style: dashed;
+  border-color: var(--line-700, var(--line-800));
+  opacity: 0.75;
+}
+.tyre-stint-segment.predicted {
+  filter: saturate(0.6);
+}
+.tyre-stint-predicted-summary {
+  font-size: 10.5px;
+  color: var(--text-lo);
+  line-height: 1.4;
+  white-space: normal;
+  max-width: 200px;
+}
+.tyre-stint-predicted-summary.faint {
+  color: var(--text-faint);
+  font-style: italic;
+}
+.tyre-stint-predicted-footnote {
+  font-size: 9px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.tyre-chip {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  font-family: "DIN Condensed", "Arial Narrow", sans-serif;
+}
+.tyre-chip.soft {
+  background: #4a1418;
+  color: #ff6b6b;
+  border: 1px solid #6b1f24;
+}
+.tyre-chip.medium {
+  background: #4a3a10;
+  color: #f2c94c;
+  border: 1px solid #6b5518;
+}
+.tyre-chip.hard {
+  background: #2a2f38;
+  color: #e7ebf1;
+  border: 1px solid #3d4452;
+}
+.tyre-chip.intermediate {
+  background: #123a1c;
+  color: #52e252;
+  border: 1px solid #1c5c2c;
+}
+.tyre-chip.wet {
+  background: #0f2a4a;
+  color: #64c4ff;
+  border: 1px solid #1c4a7a;
+}
+.tyre-chip.unknown {
+  background: #262f3d;
+  color: var(--text-faint);
+  border: 1px solid var(--line-800);
+}
+.speed-trap {
+  font-family: ui-monospace, monospace;
+  text-align: right;
+  color: var(--text-lo);
+}
+
+/* ---- battle radar ---- */
+.battle-radar-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+}
+.battle-radar-badge {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 4px;
+  cursor: default;
+  outline: none;
+}
+.battle-radar-badge.battle-radar-battle {
+  color: var(--flag-red);
+  background: rgba(230, 71, 63, 0.16);
+}
+.battle-radar-badge.battle-radar-upcoming {
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+.battle-radar-badge:focus-visible {
+  box-shadow: 0 0 0 2px var(--teal);
+}
+.battle-radar-popover {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 20;
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: var(--panel-900);
+  border: 1px solid var(--line-800);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  cursor: default;
+  white-space: nowrap;
+}
+.battle-radar-popover-head {
+  font-size: 11px;
+  color: var(--text-lo);
+  font-weight: 600;
+}
+.battle-radar-popover-gap {
+  font-family: ui-monospace, monospace;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-hi);
+}
+
+/* ---- radio indicator (timing tower) ---- */
+.radio-indicator-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+}
+.radio-indicator-badge {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 4px;
+  cursor: default;
+  outline: none;
+  color: var(--text-faint);
+  background: rgba(255, 255, 255, 0.04);
+}
+.radio-indicator-badge.radio-indicator-notable {
+  color: var(--flag-yellow);
+  background: rgba(232, 201, 58, 0.16);
+}
+.radio-indicator-badge:focus-visible {
+  box-shadow: 0 0 0 2px var(--teal);
+}
+.radio-indicator-popover {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 20;
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--panel-900);
+  border: 1px solid var(--line-800);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  cursor: default;
+  white-space: normal;
+  width: 220px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+/* One group per qualifying segment (Q1/Q2/Q3), most-recent segment first - outside
+ * qualifying every clip collapses into a single ungrouped (unlabeled) group. */
+.radio-indicator-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.radio-indicator-group + .radio-indicator-group {
+  border-top: 1px solid var(--line-800);
+  padding-top: 8px;
+}
+.radio-indicator-group-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--teal);
+  font-family: ui-monospace, monospace;
+}
+/* Every message in the group, newest first - notable ones get the same "square box"
+ * border treatment as TeamRadioPanel's .radio-msg-notable, never an explanatory reason
+ * text (F1 gives no ground-truth "why", it's an LLM inference - see radio_analysis.py). */
+.radio-indicator-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+}
+.radio-indicator-msg + .radio-indicator-msg {
+  border-top: 1px solid var(--line-800);
+  padding-top: 6px;
+}
+.radio-indicator-msg-notable {
+  border: 1px solid var(--flag-yellow);
+  box-shadow: 0 0 0 1px rgba(232, 201, 58, 0.35);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+.radio-indicator-msg-notable + .radio-indicator-msg {
+  border-top: none;
+  padding-top: 2px;
+}
+.radio-indicator-popover-lap {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: ui-monospace, monospace;
+}
+.radio-indicator-popover-transcript {
+  font-size: 12px;
+  color: var(--text-lo);
+  font-style: italic;
+}
+
+/* ---- track map ---- */
+.rm-trackmap-canvas {
+  width: 100%;
+  height: 320px;
+  display: block;
+  border-radius: 6px;
+}
+
+/* ---- telemetry lab ---- */
+.rm-telemetry-canvas {
+  width: 100%;
+  height: 240px;
+  display: block;
+}
+.rm-telemetry-legend {
+  display: flex;
+  gap: 16px;
+  font-size: 11.5px;
+  color: var(--text-lo);
+  margin-top: 8px;
+  font-family: ui-monospace, monospace;
+  flex-wrap: wrap;
+}
+.rm-telemetry-legend span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.rm-telemetry-legend i {
+  width: 10px;
+  height: 2px;
+  display: inline-block;
+}
+
+/* ---- compare widgets (generalized Telemetry Compare - CompareWidget.tsx) ---- */
+/* "+ Add Compare" sits inline in the panel's own .rm-panel-label header, matching the
+ * existing label-with-trailing-control convention (see .rm-live-pill / .gap-toggle). */
+.add-compare-btn {
+  font-family: "DIN Condensed", "Arial Narrow", sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-size: 11px;
+  color: var(--text-lo);
+  background: transparent;
+  border: 1px solid var(--line-800);
+  border-radius: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.add-compare-btn:hover,
+.add-compare-btn:focus-visible {
+  color: var(--teal);
+  border-color: var(--teal);
+}
+
+/* One widget = one metric, one row - stacked instances inside the Telemetry Compare panel. */
+.compare-widget + .compare-widget {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-800);
+}
+.compare-widget-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.compare-widget-select {
+  font-family: ui-monospace, monospace;
+  font-size: 11.5px;
+  color: var(--text-hi);
+  background: var(--panel-900);
+  border: 1px solid var(--line-800);
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.compare-widget-select:hover,
+.compare-widget-select:focus-visible {
+  border-color: var(--teal);
+}
+.compare-widget-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  line-height: 1;
+  font-size: 14px;
+  color: var(--text-faint);
+  background: transparent;
+  border: 1px solid var(--line-800);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+}
+.compare-widget-remove:hover,
+.compare-widget-remove:focus-visible {
+  color: #ff6b6b;
+  border-color: #ff6b6b;
+}
+/* Single-row canvas (one metric per widget) - sized so three stacked default widgets
+ * (Speed/Throttle/Brake) land close to the old single 3-band panel's total height, plus
+ * the small per-widget header/legend chrome each instance now carries. */
+.rm-compare-canvas {
+  width: 100%;
+  height: 82px;
+  display: block;
+}
+/* Wraps the canvas so the event-marker overlay (pit/tyre/penalty - CompareWidget.tsx) can be
+ * absolutely positioned on top of it. The markers themselves are real DOM elements (not
+ * canvas pixels) purely so they can carry a native, hoverable `title` tooltip - same pattern
+ * as .tyre-stint-badge/.sector-lap-marker elsewhere in this file. */
+.rm-compare-canvas-wrap {
+  position: relative;
+}
+/* Invisible until hovered - a persistent row of icons across every plotted lap read as
+ * clutter (confirmed feedback), so these render nothing by default. The padding (not a
+ * bigger font) is what makes them findable with the mouse: it enlarges the hoverable hit
+ * area around each point without enlarging what's actually visible at rest. */
+.rm-event-marker {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 7px;
+  cursor: pointer;
+  pointer-events: auto;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.85);
+  user-select: none;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.rm-event-marker:hover,
+.rm-event-marker:focus-visible {
+  opacity: 1;
+}
+.rm-event-marker-event {
+  font-size: 11px;
+}
+.rm-event-marker-penalty {
+  font-size: 12px;
+}
+.rm-driver-select {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.rm-driver-chip {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--line-800);
+  background: var(--panel-850);
+  color: var(--text-lo);
+  cursor: pointer;
+}
+.rm-driver-chip.active {
+  border-color: currentColor;
+  font-weight: 700;
+}
+
+/* ---- track status / weather ---- */
+.flag-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-family: "DIN Condensed", "Arial Narrow", sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.flag-banner::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.flag-banner.status-green {
+  background: rgba(62, 207, 110, 0.14);
+  color: var(--flag-green);
+}
+.flag-banner.status-yellow {
+  background: rgba(232, 201, 58, 0.14);
+  color: var(--flag-yellow);
+}
+.flag-banner.status-red {
+  background: rgba(230, 71, 63, 0.14);
+  color: var(--flag-red);
+}
+.flag-banner.status-unknown {
+  background: var(--panel-850);
+  color: var(--text-lo);
+}
+
+.rm-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+}
+.rm-strip-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rm-strip-item .v {
+  font-family: "DIN Condensed", "Arial Narrow", sans-serif;
+  font-weight: 700;
+  font-size: 20px;
+  color: var(--text-hi);
+}
+.rm-strip-item .l {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* ---- race control feed ---- */
+.rc-feed-list {
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.rc-item {
+  display: flex;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-800);
+  font-size: 12.5px;
+}
+.rc-item:last-child {
+  border-bottom: none;
+}
+.rc-item .t {
+  color: var(--text-faint);
+  font-family: ui-monospace, monospace;
+  flex: none;
+  width: 34px;
+}
+.rc-item .m {
+  color: var(--text-hi);
+}
+.rc-item .rc-lap {
+  color: var(--text-faint);
+  flex: none;
+  width: 26px;
+  font-size: 11px;
+}
+.rc-item .cat {
+  flex: none;
+  font-size: 10px;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  height: fit-content;
+}
+.cat-drs {
+  background: var(--teal-soft);
+  color: var(--teal);
+}
+.cat-flag {
+  background: rgba(232, 201, 58, 0.14);
+  color: var(--flag-yellow);
+}
+.cat-other {
+  background: var(--panel-850);
+  color: var(--text-lo);
+}
+.cat-safety-car {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.rc-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.rc-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--panel-850);
+  border: 1px solid var(--line-800);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.15s ease, border-color 0.15s ease;
+}
+.rc-filter-chip:hover {
+  opacity: 0.8;
+}
+.rc-filter-chip.active {
+  opacity: 1;
+  border-color: currentcolor;
+}
+.rc-filter-chip.cat-drs.active {
+  color: var(--teal);
+}
+.rc-filter-chip.cat-flag.active {
+  color: var(--flag-yellow);
+}
+.rc-filter-chip.cat-safety-car.active {
+  color: var(--amber);
+}
+.rc-filter-chip.cat-other.active {
+  color: var(--text-hi);
+}
+.rc-filter-chip-count {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- team radio ---- */
+.radio-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-800);
+  font-size: 12.5px;
+}
+.radio-item:last-child {
+  border-bottom: none;
+}
+.radio-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.radio-play-btn {
+  background: var(--teal-soft);
+  color: var(--teal);
+  border: none;
+  border-radius: 50%;
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+  font-size: 12px;
+  flex: none;
+}
+.radio-play-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.radio-driver {
+  font-weight: 700;
+  color: var(--text-hi);
+}
+.radio-lap {
+  color: var(--text-faint);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+.radio-transcript {
+  color: var(--text-lo);
+  font-style: italic;
+  padding-left: 34px;
+}
+.radio-status {
+  color: var(--text-faint);
+  padding-left: 34px;
+  font-size: 11px;
+}
+
+/* ---- team radio chat (TeamRadioPanel) ---- */
+.radio-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* Fill the panel's actual height (see .rm-panel) instead of a fixed max-height that left
+   * a dead gap between the scroll area and the (taller) panel border below it. min-height:0
+   * overrides flexbox's default min-height:auto (which sizes a flex item to at least its
+   * content, i.e. every message fully expanded) so this can actually shrink to the space
+   * the grid gave it and scroll internally instead of forcing the panel to overflow it. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.radio-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 78%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--panel-850);
+  border: 1px solid var(--line-800);
+  font-size: 12.5px;
+}
+.radio-msg .radio-transcript,
+.radio-msg .radio-status {
+  padding-left: 0;
+}
+.radio-msg-pit_wall {
+  align-self: flex-start;
+  border-bottom-left-radius: 2px;
+}
+.radio-msg-driver {
+  align-self: flex-end;
+  border-bottom-right-radius: 2px;
+  background: var(--teal-soft);
+}
+.radio-msg-unclear {
+  align-self: center;
+  background: var(--panel-850);
+}
+.radio-msg-notable {
+  border-color: var(--flag-yellow);
+  box-shadow: 0 0 0 1px rgba(232, 201, 58, 0.35);
+}
+.radio-notable-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--flag-yellow);
+}
+
+
+/* ---- lap delta / corner comparison ---- */
+.lap-compare-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.lap-compare-controls label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-lo);
+}
+.lap-compare-controls input[type="number"] {
+  width: 56px;
+  background: var(--panel-850);
+  border: 1px solid var(--line-800);
+  border-radius: 4px;
+  color: var(--text-hi);
+  padding: 4px 6px;
+  font-family: ui-monospace, monospace;
+  font-size: 12.5px;
+}
+.lap-compare-btn {
+  background: var(--teal-soft);
+  color: var(--teal);
+  border: 1px solid rgba(53, 214, 196, 0.35);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lap-compare-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ---- session clock ---- */
+.rm-clock {
+  display: flex;
+  gap: 24px;
+  align-items: baseline;
+}
+.rm-clock .big {
+  font-family: "DIN Condensed", "Arial Narrow", sans-serif;
+  font-weight: 700;
+  font-size: 30px;
+  color: var(--text-hi);
+}
+.rm-clock .lbl {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.rm-clock .qualifying-part {
+  color: var(--flag-yellow);
+}
