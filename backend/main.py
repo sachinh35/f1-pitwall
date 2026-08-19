@@ -36,13 +36,15 @@ from api_pydantic_models.race_sesssions import GetAllSessionTypesResponse, GetSe
 from api_pydantic_models.races import GetAvailableYearsResponse, GetRacesForYearsResponse
 from api_pydantic_models.stints import GetSessionStintsResponse
 from constants.season import CURRENT_SEASON_YEAR
-from utils import f1_auth, lap_data, lap_telemetry_db, live_stream, live_tail, race_control, race_session, replay, stints, team_radio_db
-from utils.database import DatabaseManager
-from utils.lap_comparison import build_lap_trace, compute_delta_trace
-from utils.live_session_pipeline import get_pipeline
-from utils.live_stream import STREAM_LOGS_DIR
-from utils.team_driver_pool_db import get_team_driver_pool
-from utils.team_radio_pipeline import AUDIO_CACHE_DIR
+from auth import f1_auth
+from db import lap_data, lap_telemetry_db, race_control, race_session, stints, team_radio_db
+from live import live_stream, live_tail, replay
+from db.database import DatabaseManager
+from db.lap_comparison import build_lap_trace, compute_delta_trace
+from live.live_session_pipeline import get_pipeline
+from live.live_stream import STREAM_LOGS_DIR
+from db.team_driver_pool_db import get_team_driver_pool
+from team_radio.team_radio_pipeline import AUDIO_CACHE_DIR
 
 logging.basicConfig(
     level=logging.INFO,
@@ -214,7 +216,7 @@ async def authenticate_f1tv(request: AuthenticateRequest) -> AuthenticateRespons
 async def start_browser_auth() -> StartBrowserAuthResponse:
     """
     Start the browser-based F1TV login flow (FastF1 Companion extension / the
-    f1login.fastf1.dev relay - see ATTRIBUTION.md and utils/f1_auth.py). Returns a
+    f1login.fastf1.dev relay - see ATTRIBUTION.md and auth/f1_auth.py). Returns a
     URL for the caller to open themselves; poll /authenticate-f1tv/browser-status
     afterwards to learn when the login completes. Your F1TV password never reaches
     this backend - only the resulting token, once you've logged in on that page.
@@ -336,7 +338,7 @@ async def start_live_stream(request: StartStreamRequest) -> StartStreamResponse:
 async def simulate_live_stream(request: SimulateStreamRequest = SimulateStreamRequest()) -> StartStreamResponse:
     """
     Start a replay of a captured stream_logs/*.jsonl file, driven through the
-    exact same pipeline a live SignalR session uses (utils/live_session_pipeline.py).
+    exact same pipeline a live SignalR session uses (live/live_session_pipeline.py).
     This is the primary way to develop against and demo Race Mode without a
     live F1TV connection - defaults to the full captured Qatar GP race.
     """
@@ -384,7 +386,7 @@ async def attach_live_stream(request: AttachStreamRequest = AttachStreamRequest(
     connection (see /start-live-stream for that path). This is the intended way to watch
     a session the standalone capture process is already recording: the capture keeps
     running independent of the backend, so restarting the backend and calling this again
-    just re-attaches and catches straight back up - see utils/live_tail.py.
+    just re-attaches and catches straight back up - see live/live_tail.py.
     """
     try:
         if request.session_name:
@@ -436,7 +438,7 @@ async def stream_live_events(stream_id: str, request: Request) -> EventSourceRes
     pipeline = get_pipeline(stream_id)
     if pipeline is None:
         # The pipeline is only ever in-memory - lost on a backend restart. If this
-        # stream_id is a live-capture tail (see utils/live_tail.py's naming), the raw
+        # stream_id is a live-capture tail (see live/live_tail.py's naming), the raw
         # archive itself is untouched (the standalone capture process owns it, not the
         # backend - see scripts/capture_stream.py), so we can transparently re-attach
         # and catch back up instead of 404ing. This is what makes a backend restart
@@ -480,7 +482,7 @@ async def get_lap_comparison(
     """
     Distance-aligned telemetry comparison between two completed laps -
     speed/throttle/brake/acceleration traces plus the delta-time trace and
-    inferred corner locations (see utils/lap_comparison.py for how both are
+    inferred corner locations (see db/lap_comparison.py for how both are
     derived - F1's feed gives neither directly). Works for any two laps
     already persisted to lap_telemetry/lap_car_position, live or historical.
     """

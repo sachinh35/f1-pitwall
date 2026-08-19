@@ -12,14 +12,14 @@ from typing import List
 from api_pydantic_models.race_control import RaceControlEventDB, RaceControlEventResponse
 from constants.openf1_api_endpoints import RACE_CONTROL_API_URL
 from openf1_pydantic_models.f1_race_control import F1RaceControlEvent
-from utils.cache_first_fetch import get_or_fetch
-from utils.database import (
+from db.cache_first_fetch import get_or_fetch
+from db.database import (
     check_race_control_events_exists,
     get_race_control_events_from_db,
     insert_race_control_events_batch,
 )
-from utils.http_client import fetch_json
-from utils.time_utils import normalize_datetime
+from common.http_client import fetch_json
+from common.time_utils import normalize_datetime
 
 logger = logging.getLogger(__name__)
 

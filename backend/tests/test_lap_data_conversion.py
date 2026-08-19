@@ -1,4 +1,4 @@
-"""Covers the parts of utils/lap_data.py not exercised by test_lap_data.py's
+"""Covers the parts of db/lap_data.py not exercised by test_lap_data.py's
 get_lap_data_for_session equivalence test: the OpenF1 fetch leg and the
 DB<->OpenF1 conversion helpers."""
 from unittest.mock import AsyncMock
@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from openf1_pydantic_models.f1_laps import F1LapData
-from utils import lap_data
+from db import lap_data
 
 
 @pytest.mark.asyncio

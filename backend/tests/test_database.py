@@ -1,5 +1,5 @@
 """
-Unit tests for utils/database.py - DatabaseManager's pool lifecycle plus the lap_data/
+Unit tests for db/database.py - DatabaseManager's pool lifecycle plus the lap_data/
 stints/race_control_events DB helper functions. All asyncpg I/O is mocked; no real
 Postgres connection is made.
 """
@@ -12,8 +12,8 @@ import pytest
 from api_pydantic_models.lap_data import LapDataDB
 from api_pydantic_models.race_control import RaceControlEventDB
 from api_pydantic_models.stints import StintDB
-from utils import database
-from utils.database import DatabaseManager
+from db import database
+from db.database import DatabaseManager
 
 
 @pytest.fixture(autouse=True)

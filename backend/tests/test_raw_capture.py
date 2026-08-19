@@ -1,10 +1,10 @@
-"""Unit tests for utils/raw_capture.py's RawStreamArchiver."""
+"""Unit tests for live/raw_capture.py's RawStreamArchiver."""
 import json
 from pathlib import Path
 
 import pytest
 
-from utils.raw_capture import RawStreamArchiver
+from live.raw_capture import RawStreamArchiver
 
 
 @pytest.mark.asyncio

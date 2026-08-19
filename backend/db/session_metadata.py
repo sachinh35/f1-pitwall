@@ -16,7 +16,7 @@ from typing import List, Optional
 from constants.openf1_api_endpoints import DRIVERS_API_URL, LAPS_API_URL, SESSIONS_API_URL
 from openf1_pydantic_models.f1_drivers import DriverInfo
 from openf1_pydantic_models.f1_sessions import F1Session
-from utils.http_client import fetch_json
+from common.http_client import fetch_json
 
 logger = logging.getLogger(__name__)
 

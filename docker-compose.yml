@@ -51,7 +51,7 @@ services:
       DB_NAME: ${DB_NAME:-f1-analytics}
       DB_PASSWORD: ${DB_PASSWORD:-}
       # Optional - only needed for the team-radio "notable message" classifier
-      # (utils/radio_analysis.py). Everything else works without it.
+      # (team_radio/radio_analysis.py). Everything else works without it.
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL_ID: ${GEMINI_MODEL_ID:-}
     volumes:
@@ -61,7 +61,7 @@ services:
       # Downloaded team-radio audio clips, served back out via the /audio
       # static mount (see main.py) - same reasoning as stream_logs above.
       - ./backend/audio_cache:/app/audio_cache
-      # The saved F1TV auth token (utils/f1_auth.py's AUTH_DATA_FILE) - lives
+      # The saved F1TV auth token (auth/f1_auth.py's AUTH_DATA_FILE) - lives
       # under platformdirs.user_data_dir("f1-dashboard"), which resolves to
       # /root/.local/share/f1-dashboard in this container (confirmed via
       # `docker exec ... python -c "import platformdirs; ..."`). Without this,

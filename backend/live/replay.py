@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any, Iterator, List, Optional, Tuple
 
 from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
-from utils.live_session_pipeline import LiveSessionPipeline, register_pipeline, unregister_pipeline
-from utils.time_utils import parse_iso_timestamp
+from live.live_session_pipeline import LiveSessionPipeline, register_pipeline, unregister_pipeline
+from common.time_utils import parse_iso_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ def start_replay(
     registered LiveSessionPipeline. Returns the new session's stream_id
     immediately - the replay itself runs as a detached asyncio task.
 
-    Mirrors utils/live_stream.py's start_stream() for the live path: same
+    Mirrors live/live_stream.py's start_stream() for the live path: same
     "start now, return an id, work happens in the background" shape.
     """
     if not log_path.exists():

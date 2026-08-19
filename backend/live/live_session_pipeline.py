@@ -23,8 +23,8 @@ from typing import Any, Coroutine, Dict, List, Optional, Set, Tuple
 
 from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
 from openf1_pydantic_models.f1_drivers import DriverInfo
-from utils import f1_auth
-from utils.live_persistence import (
+from auth import f1_auth
+from db.live_persistence import (
     mark_lap_deleted,
     persist_completed_lap,
     persist_confirmed_driver_roster,
@@ -35,10 +35,10 @@ from utils.live_persistence import (
     persist_total_laps,
     persist_weather_snapshot,
 )
-from utils.session_metadata import fetch_driver_roster, fetch_session_metadata, fetch_total_laps
-from utils.session_state import CompletedLap, RadioCapture, SessionState, StateDiff
-from utils.team_radio_pipeline import process_radio_capture
-from utils.tyre_strategy_prediction import TyreStrategyPrediction, build_context, predict_tyre_strategy
+from db.session_metadata import fetch_driver_roster, fetch_session_metadata, fetch_total_laps
+from live.session_state import CompletedLap, RadioCapture, SessionState, StateDiff
+from team_radio.team_radio_pipeline import process_radio_capture
+from predictions.tyre_strategy_prediction import TyreStrategyPrediction, build_context, predict_tyre_strategy
 
 logger = logging.getLogger(__name__)
 
@@ -74,12 +74,12 @@ _TYRE_STRATEGY_STALE_LAP_THRESHOLD = 2
 def _radio_auth_headers() -> Optional[Dict[str, str]]:
     """
     Bearer-auth header for team-radio audio downloads, built from whatever F1TV
-    subscription token is currently saved (see utils/f1_auth.py). None if no valid
+    subscription token is currently saved (see auth/f1_auth.py). None if no valid
     token is saved - the download is then attempted unauthenticated, exactly as it
     always has been, so this is purely additive.
 
     Unconfirmed by a real successful download as of this writing (see
-    utils/team_radio_pipeline.py's F1_STATIC_CONTENT_BASE_URL comment) - Bearer is
+    team_radio/team_radio_pipeline.py's F1_STATIC_CONTENT_BASE_URL comment) - Bearer is
     the standard convention for this kind of token, but F1's static content host
     might expect something else entirely (a cookie, no auth at all, ...).
     """
@@ -350,7 +350,7 @@ class LiveSessionPipeline:
         task.add_done_callback(self._background_tasks.discard)
 
     async def handle_message(self, event_name: str, payload: Any, event_time: Optional[datetime] = None) -> None:
-        """Alias satisfying utils.live_stream.StreamSink - see process_message, the actual implementation."""
+        """Alias satisfying live.live_stream.StreamSink - see process_message, the actual implementation."""
         await self.process_message(event_name, payload, event_time=event_time)
 
     async def process_message(self, event_name: str, payload: Any, event_time: Optional[datetime] = None) -> None:
@@ -526,7 +526,7 @@ class LiveSessionPipeline:
 
     async def _predict_and_broadcast_tyre_strategy(self, driver_number: int, lap_number: int) -> None:
         """Refresh one driver's predicted remaining tyre strategy after they complete a lap -
-        see utils/tyre_strategy_prediction.py. Best-effort: a failed/slow Gemini call just
+        see predictions/tyre_strategy_prediction.py. Best-effort: a failed/slow Gemini call just
         means that driver's prediction goes stale until their next completed lap, never
         raised into the pipeline processing everything else.
 

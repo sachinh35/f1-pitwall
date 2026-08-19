@@ -1,5 +1,5 @@
-"""Unit tests for utils/live_tail.py - the backend's tail-and-catch-up side of the
-capture/backend split (see utils/raw_capture.py's RawStreamArchiver for the write side)."""
+"""Unit tests for live/live_tail.py - the backend's tail-and-catch-up side of the
+capture/backend split (see live/raw_capture.py's RawStreamArchiver for the write side)."""
 import asyncio
 import json
 from datetime import datetime
@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from utils import live_tail
-from utils.live_session_pipeline import get_pipeline
+from live import live_tail
+from live.live_session_pipeline import get_pipeline
 
 
 def _append_entry(log_path: Path, entry: dict) -> None:

@@ -1,5 +1,5 @@
 """
-Covers the parts of utils/race_control.py not already exercised by
+Covers the parts of db/race_control.py not already exercised by
 test_lap_data.py's cache-hit smoke test: the OpenF1 fetch leg and the
 scope-inference logic in convert_openf1_to_db_model.
 """
@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from openf1_pydantic_models.f1_race_control import F1RaceControlEvent
-from utils import race_control
+from db import race_control
 
 
 @pytest.mark.asyncio

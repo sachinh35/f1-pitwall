@@ -10,7 +10,7 @@ Usage:
     uv run python -m scripts.migrate
 
 (Run as a module, not a bare script path, so the project root - and therefore
-`utils` - is importable.)
+`db` - is importable.)
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from typing import List, Set
 
 import asyncpg
 
-from utils.database import DatabaseManager
+from db.database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 

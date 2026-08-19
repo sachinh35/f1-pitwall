@@ -1,5 +1,5 @@
 """
-Archive-only sink for utils/live_stream.py's F1SignalRStreamer - satisfies StreamSink
+Archive-only sink for live/live_stream.py's F1SignalRStreamer - satisfies StreamSink
 without any of LiveSessionPipeline's dependencies (Postgres, session-state decode, SSE
 broadcast). This is what scripts/capture_stream.py uses: its only job is to keep raw
 JSONL capture running for as long as a session is live, independent of the FastAPI
@@ -7,7 +7,7 @@ backend's process lifecycle, so it must not depend on anything that could make i
 (a DB outage, a decode bug in a new message shape, etc.).
 
 Writes the exact same line format LiveSessionPipeline._archive_raw/log_event produce, so
-utils/replay.py's iter_log_messages (and utils/live_tail.py) parse it unchanged - the
+live/replay.py's iter_log_messages (and live/live_tail.py) parse it unchanged - the
 capture process and the backend agree on one file format without sharing code that could
 introduce backend-only dependencies into the capture process.
 """

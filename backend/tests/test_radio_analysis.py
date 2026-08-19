@@ -1,5 +1,5 @@
 """
-Unit tests for utils/radio_analysis.py. The real Gemini API is never called here -
+Unit tests for team_radio/radio_analysis.py. The real Gemini API is never called here -
 _get_agent (or the module-level GeminiConfig it depends on) is monkeypatched throughout.
 See tests/test_radio_analysis_e2e.py for a real-API/real-audio end-to-end run.
 """
@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from utils import radio_analysis
-from utils.radio_analysis import GeminiConfig, RadioMessageAnalysis, analyze_transcript
+from team_radio import radio_analysis
+from team_radio.radio_analysis import GeminiConfig, RadioMessageAnalysis, analyze_transcript
 
 
 @pytest.fixture(autouse=True)

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from scripts import migrate
-from utils.database import DatabaseManager
+from db.database import DatabaseManager
 
 
 class _FakeConnection:

@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import List
 
 from api_pydantic_models.live_stream import TeamDriverPoolEntry
-from utils.database import DatabaseManager
+from db.database import DatabaseManager
 
 
 async def get_team_driver_pool(season_year: int) -> List[TeamDriverPoolEntry]:

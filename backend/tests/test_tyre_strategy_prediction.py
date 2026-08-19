@@ -1,5 +1,5 @@
 """
-Unit tests for utils/tyre_strategy_prediction.py. build_context() is tested directly
+Unit tests for predictions/tyre_strategy_prediction.py. build_context() is tested directly
 against a real SessionState (no mocking needed - it's pure state reading). The real Gemini
 API is never called - the module's Agent class is monkeypatched for predict_tyre_strategy
 (see _fake_agent_class below - a fresh Agent is constructed per call by design, see
@@ -10,9 +10,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from utils import tyre_strategy_prediction
-from utils.session_state import SessionState
-from utils.tyre_strategy_prediction import (
+from predictions import tyre_strategy_prediction
+from live.session_state import SessionState
+from predictions.tyre_strategy_prediction import (
     GeminiConfig,
     PredictedStint,
     RivalContext,

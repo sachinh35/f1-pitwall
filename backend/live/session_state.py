@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 
-from utils.telemetry_decoder import (
+from live.telemetry_decoder import (
     DRS_ACTIVE_CODES,
     CarDataFrame,
     PositionFrame,
@@ -365,7 +365,7 @@ class SessionState:
         self.battle_radar: Dict[int, Dict[str, Any]] = {}
         # Predicted remaining tyre strategy per driver (race/sprint only), refreshed once per
         # driver per completed lap by a detached Strands-Agent/Gemini call - see
-        # utils/tyre_strategy_prediction.py and LiveSessionPipeline._predict_and_broadcast_tyre_strategy.
+        # predictions/tyre_strategy_prediction.py and LiveSessionPipeline._predict_and_broadcast_tyre_strategy.
         # Already wire-shaped (like battle_radar above), not the raw TyreStrategyPrediction model.
         self.tyre_strategy_predictions: Dict[int, Dict[str, Any]] = {}
         # event_time of each driver's last *live* (not lap-boundary) gap sample -

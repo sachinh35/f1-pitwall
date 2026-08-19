@@ -1,7 +1,7 @@
-"""Unit tests for utils/lap_comparison.py."""
+"""Unit tests for db/lap_comparison.py."""
 import pytest
 
-from utils.lap_comparison import (
+from db.lap_comparison import (
     LapTrace,
     build_lap_trace,
     compute_acceleration,

@@ -8,7 +8,7 @@ This is the backend's half of the capture/backend split: scripts/capture_stream.
 owns writing the raw archive and never stops; this module is what lets the backend
 (re)derive full current state from that archive on demand, so restarting the backend
 (a crash, a redeploy, a developer iterating on the frontend) never loses live data -
-call start_tail() again and it catches straight back up. See utils/raw_capture.py and
+call start_tail() again and it catches straight back up. See live/raw_capture.py and
 main.py's auto-reattach logic in GET /live/{stream_id}/events.
 """
 from __future__ import annotations
@@ -21,8 +21,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, TextIO, Tuple
 
 from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
-from utils.live_session_pipeline import LiveSessionPipeline, register_pipeline, unregister_pipeline
-from utils.time_utils import parse_iso_timestamp
+from live.live_session_pipeline import LiveSessionPipeline, register_pipeline, unregister_pipeline
+from common.time_utils import parse_iso_timestamp
 
 logger = logging.getLogger(__name__)
 

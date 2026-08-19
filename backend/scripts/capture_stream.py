@@ -5,7 +5,7 @@ Deliberately independent of the FastAPI/uvicorn backend's process lifecycle: thi
 script's only job is to keep stream_logs/live_<session-name>.jsonl growing for as
 long as a session is live, no matter what happens to the backend or frontend
 (restarts, crashes, redeploys, a developer iterating on frontend code). The backend
-attaches to the same file by tailing it (see utils/live_tail.py) instead of owning
+attaches to the same file by tailing it (see live/live_tail.py) instead of owning
 the SignalR connection itself, so restarting the backend never interrupts capture.
 
 Run once per session and leave it running throughout - typically via the watchdog
@@ -17,10 +17,10 @@ Usage:
     uv run python -m scripts.capture_stream --session-name quali_2026_07_25
     uv run python -m scripts.capture_stream --session-name quali_2026_07_25 --token <f1tv-token>
 
-If --token is omitted, falls back to a saved F1TV token (utils.f1_auth.get_saved_token)
+If --token is omitted, falls back to a saved F1TV token (auth.f1_auth.get_saved_token)
 if valid, otherwise proceeds unauthenticated - exactly like /start-live-stream. Live
 timing data itself doesn't require authentication (only team-radio audio downloads do,
-and this script doesn't download audio at all - see utils/raw_capture.py).
+and this script doesn't download audio at all - see live/raw_capture.py).
 """
 from __future__ import annotations
 
@@ -32,9 +32,9 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from utils import f1_auth
-from utils.live_stream import STREAM_LOGS_DIR, F1SignalRStreamer
-from utils.raw_capture import RawStreamArchiver
+from auth import f1_auth
+from live.live_stream import STREAM_LOGS_DIR, F1SignalRStreamer
+from live.raw_capture import RawStreamArchiver
 
 logger = logging.getLogger(__name__)
 

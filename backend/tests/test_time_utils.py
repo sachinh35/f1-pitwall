@@ -1,7 +1,7 @@
-"""Unit tests for utils/time_utils.py."""
+"""Unit tests for common/time_utils.py."""
 from datetime import datetime, timezone, timedelta
 
-from utils.time_utils import normalize_datetime, parse_iso_timestamp
+from common.time_utils import normalize_datetime, parse_iso_timestamp
 
 
 def test_normalize_datetime_none_returns_none() -> None:

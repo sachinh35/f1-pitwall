@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Bake in the same Whisper model used for local dev (ggml-small.bin, ~487MB) from
 # whisper.cpp's own official model host, so team-radio transcription works out of
-# the box with no runtime volume mount needed. See utils/whisper_transcriber.py -
+# the box with no runtime volume mount needed. See team_radio/whisper_transcriber.py -
 # WHISPER_MODELS_DIR points it at this directory instead of the local-dev default
 # (~/.cache/openwhispr/whisper-models). Done early, independent of app code, so it
 # isn't re-downloaded on every source change.

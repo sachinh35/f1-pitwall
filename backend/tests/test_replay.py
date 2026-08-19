@@ -1,11 +1,11 @@
-"""Unit tests for utils/replay.py."""
+"""Unit tests for live/replay.py."""
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
-from utils.replay import iter_log_messages, replay_log_file
+from live.replay import iter_log_messages, replay_log_file
 
 
 def _write_log(tmp_path: Path, entries: list[dict]) -> Path:

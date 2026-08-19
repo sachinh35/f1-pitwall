@@ -1,5 +1,5 @@
 """
-Unit tests for utils/team_radio_pipeline.py's state-machine orchestration.
+Unit tests for team_radio/team_radio_pipeline.py's state-machine orchestration.
 
 All external effects (DB, network download, Whisper transcription) are
 mocked here - they're each already covered by their own tests/real smoke
@@ -14,9 +14,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from utils import team_radio_pipeline
-from utils.radio_analysis import RadioMessageAnalysis
-from utils.session_state import RadioCapture
+from team_radio import team_radio_pipeline
+from team_radio.radio_analysis import RadioMessageAnalysis
+from live.session_state import RadioCapture
 
 
 def _make_capture() -> RadioCapture:

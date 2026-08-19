@@ -1,5 +1,5 @@
 """
-Covers the parts of utils/live_stream.py's F1SignalRStreamer not already exercised by
+Covers the parts of live/live_stream.py's F1SignalRStreamer not already exercised by
 test_live_stream.py (which focuses on the sink abstraction and run()'s reconnect loop):
 the negotiation/connection/handler-registration/subscription machinery, plus the
 module-level start_stream()/stop_stream() helpers. All real network I/O (httpx,
@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from utils import live_stream
-from utils.live_stream import F1SignalRStreamer, start_stream, stop_stream
+from live import live_stream
+from live.live_stream import F1SignalRStreamer, start_stream, stop_stream
 
 
 def _fake_sink() -> MagicMock:

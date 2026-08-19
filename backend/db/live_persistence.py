@@ -17,9 +17,9 @@ from typing import Any, Dict, List, Optional
 from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
 from openf1_pydantic_models.f1_drivers import DriverInfo
 from openf1_pydantic_models.f1_sessions import F1Session
-from utils.database import DatabaseManager
-from utils.session_state import CompletedLap, QualifyingResultEntry
-from utils.time_utils import normalize_datetime
+from db.database import DatabaseManager
+from live.session_state import CompletedLap, QualifyingResultEntry
+from common.time_utils import normalize_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -304,7 +304,7 @@ async def persist_session_metadata(session: F1Session) -> None:
 
 async def persist_total_laps(session_key: int, total_laps: int) -> None:
     """Record the resolved total race-lap count against an already-persisted session row
-    (see utils.session_metadata.fetch_total_laps for why this is a separate, later write
+    (see db.session_metadata.fetch_total_laps for why this is a separate, later write
     rather than part of persist_session_metadata's OpenF1-sourced F1Session fields)."""
     async with DatabaseManager.get_connection() as conn:
         await conn.execute(

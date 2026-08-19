@@ -1,10 +1,10 @@
-"""Unit tests for utils/race_session.py - both OpenF1-backed functions, with fetch_json
+"""Unit tests for db/race_session.py - both OpenF1-backed functions, with fetch_json
 mocked (no real network calls)."""
 from unittest.mock import AsyncMock
 
 import pytest
 
-from utils import race_session
+from db import race_session
 
 
 @pytest.mark.asyncio

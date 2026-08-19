@@ -1,10 +1,10 @@
-"""Unit tests for utils/cache_first_fetch.py."""
+"""Unit tests for db/cache_first_fetch.py."""
 from typing import List
 from unittest.mock import AsyncMock
 
 import pytest
 
-from utils.cache_first_fetch import get_or_fetch
+from db.cache_first_fetch import get_or_fetch
 
 
 @pytest.mark.asyncio

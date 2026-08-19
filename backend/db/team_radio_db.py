@@ -3,8 +3,8 @@ DB access for team-radio clips.
 
 This is a live-only concept with no OpenF1/historical equivalent, so unlike
 lap_data/stints/race_control it doesn't fit the cache-first fetch pattern in
-utils/cache_first_fetch.py - it's an insert-then-repeatedly-update state
-machine (see utils/team_radio_pipeline.py), not a batch cache read.
+db/cache_first_fetch.py - it's an insert-then-repeatedly-update state
+machine (see team_radio/team_radio_pipeline.py), not a batch cache read.
 """
 from __future__ import annotations
 
@@ -14,12 +14,12 @@ from typing import Any, List, Optional
 
 from pydantic import BaseModel
 
-from utils.database import DatabaseManager
-from utils.time_utils import normalize_datetime
+from db.database import DatabaseManager
+from common.time_utils import normalize_datetime
 
 
 class RadioClipStatus(str, Enum):
-    """Mirrors the state machine in utils/team_radio_pipeline.py."""
+    """Mirrors the state machine in team_radio/team_radio_pipeline.py."""
     PENDING = "pending"
     DOWNLOADING = "downloading"
     DOWNLOADED = "downloaded"
@@ -43,7 +43,7 @@ class TeamRadioDB(BaseModel):
     status: RadioClipStatus = RadioClipStatus.PENDING
     error: Optional[str] = None
     transcribed_at: Optional[datetime] = None
-    # Gemini-classified, set once analysis completes (see utils/radio_analysis.py) - all
+    # Gemini-classified, set once analysis completes (see team_radio/radio_analysis.py) - all
     # None until then, and speaker_role in particular is an LLM inference, not ground
     # truth, since F1's raw feed carries no speaker/diarization info at all.
     speaker_role: Optional[str] = None
@@ -65,7 +65,7 @@ async def insert_pending(
     - this was a real bug: without it, every re-simulation/re-tail of the same archive
     re-ran the full pipeline, including Whisper and Gemini calls, for every capture from
     scratch). The caller must skip the rest of its pipeline entirely on None, not just skip
-    the insert - see utils/team_radio_pipeline.py.
+    the insert - see team_radio/team_radio_pipeline.py.
 
     `ts` comes from F1's raw TeamRadio.Captures[].Utc, parsed tz-aware (see
     session_state._parse_utc); `team_radio.ts` is a plain TIMESTAMP column, so this
@@ -141,7 +141,7 @@ async def mark_failed_transcription(row_id: int, error: str) -> None:
 async def mark_analyzed(row_id: int, speaker_role: str, is_notable: bool, notable_reason: Optional[str]) -> None:
     """Record the Gemini classification for an already-transcribed clip. Deliberately does not
     touch `status` - a failed/skipped analysis must never regress an otherwise-successful
-    transcription back to a non-done state (see utils/team_radio_pipeline.py)."""
+    transcription back to a non-done state (see team_radio/team_radio_pipeline.py)."""
     await _update(row_id, speaker_role=speaker_role, is_notable=is_notable, notable_reason=notable_reason)
 
 

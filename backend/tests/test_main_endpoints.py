@@ -3,7 +3,7 @@ Endpoint-level unit tests for main.py's remaining (previously untested) routes.
 
 Follows the pattern established in tests/test_main.py: TestClient without entering it
 as a context manager (so the startup event - which needs a real Postgres pool - never
-fires), and each downstream utils module mocked at the `main.<module>` level.
+fires), and each downstream module mocked at the `main.<module>` level.
 """
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
-from utils.lap_comparison import Corner, DeltaTrace, LapTrace
+from db.lap_comparison import Corner, DeltaTrace, LapTrace
 
 client = TestClient(main.app)
 

@@ -1,5 +1,5 @@
 """
-Unit tests for utils/live_session_pipeline.py - the write-path orchestration
+Unit tests for live/live_session_pipeline.py - the write-path orchestration
 (archive -> merge -> broadcast -> detached persist) that both the live
 SignalR stream and replay drive identically. Persistence/radio functions are
 mocked here; each is already covered by its own tests (test_live_persistence.py,
@@ -16,9 +16,9 @@ import pytest
 from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
 from openf1_pydantic_models.f1_drivers import DriverInfo
 from openf1_pydantic_models.f1_sessions import F1Session
-from utils import live_session_pipeline as pipeline_module
-from utils.live_session_pipeline import LiveSessionPipeline, diff_to_wire
-from utils.session_state import RadioCapture, SessionState, StateDiff
+from live import live_session_pipeline as pipeline_module
+from live.live_session_pipeline import LiveSessionPipeline, diff_to_wire
+from live.session_state import RadioCapture, SessionState, StateDiff
 
 _SAMPLE_CONFIRMED_ROSTER = [
     ConfirmedRosterEntry(driver_number=1, tla="NOR", full_name="Lando Norris", team_name="McLaren", team_colour="#F58020"),
@@ -86,7 +86,7 @@ def _mock_persistence(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(pipeline_module, "fetch_driver_roster", AsyncMock(return_value=[]))
     monkeypatch.setattr(pipeline_module, "fetch_total_laps", AsyncMock(return_value=None))
     # No token saved by default - keeps tests deterministic regardless of the machine's real
-    # local F1TV auth state (see utils/f1_auth.py). Tests that care about the auth-headers
+    # local F1TV auth state (see auth/f1_auth.py). Tests that care about the auth-headers
     # path override this explicitly.
     monkeypatch.setattr(pipeline_module.f1_auth, "get_saved_token", lambda: None)
     monkeypatch.setattr(pipeline_module, "persist_total_laps", AsyncMock())
@@ -201,7 +201,7 @@ async def test_completed_lap_persist_skipped_when_session_key_unknown() -> None:
 
 @pytest.mark.asyncio
 async def test_completed_lap_triggers_tyre_strategy_prediction_in_race_mode(monkeypatch: pytest.MonkeyPatch) -> None:
-    from utils.tyre_strategy_prediction import PredictedStint, TyreStrategyPrediction
+    from predictions.tyre_strategy_prediction import PredictedStint, TyreStrategyPrediction
 
     prediction = TyreStrategyPrediction(
         predicted_stints=[PredictedStint(stint_number=1, compound="hard", predicted_total_laps=30)],

@@ -1,9 +1,9 @@
-"""Unit tests for utils/lap_telemetry_db.py (mocked DB, same pattern as test_live_persistence.py)."""
+"""Unit tests for db/lap_telemetry_db.py (mocked DB, same pattern as test_live_persistence.py)."""
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from utils import lap_telemetry_db
+from db import lap_telemetry_db
 
 
 def _mock_db(monkeypatch: pytest.MonkeyPatch, fetchrow_result):

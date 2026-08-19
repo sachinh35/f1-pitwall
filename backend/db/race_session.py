@@ -11,7 +11,7 @@ from api_pydantic_models.race_sesssions import EnrichedF1SessionResult
 from constants.openf1_api_endpoints import DRIVERS_API_URL, SESSION_RESULTS_API_URL, SESSIONS_API_URL
 from openf1_pydantic_models.f1_drivers import DriverInfo
 from openf1_pydantic_models.f1_sessions import GetF1SessionResultResponse, GetF1SessionsResponse
-from utils.http_client import fetch_json
+from common.http_client import fetch_json
 
 logger = logging.getLogger(__name__)
 

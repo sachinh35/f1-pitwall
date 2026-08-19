@@ -1,11 +1,11 @@
-"""Covers utils/stints.py's OpenF1 fetch leg, not exercised by test_lap_data.py's
+"""Covers db/stints.py's OpenF1 fetch leg, not exercised by test_lap_data.py's
 get_stints_for_session cache-miss test (which mocks fetch_stints_from_openf1 itself)."""
 from unittest.mock import AsyncMock
 
 import pytest
 
 from openf1_pydantic_models.f1_stints import F1Stint
-from utils import stints
+from db import stints
 
 
 @pytest.mark.asyncio

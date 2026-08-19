@@ -1,4 +1,4 @@
-"""Unit tests for utils/live_persistence.py."""
+"""Unit tests for db/live_persistence.py."""
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -7,9 +7,9 @@ import pytest
 from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
 from openf1_pydantic_models.f1_drivers import DriverInfo
 from openf1_pydantic_models.f1_sessions import F1Session
-from utils import live_persistence
-from utils.live_persistence import _parse_rc_timestamp, _to_float, _to_int, _to_naive_utc
-from utils.session_state import CompletedLap, LapAggregates, QualifyingResultEntry, TelemetrySampleBuffer
+from db import live_persistence
+from db.live_persistence import _parse_rc_timestamp, _to_float, _to_int, _to_naive_utc
+from live.session_state import CompletedLap, LapAggregates, QualifyingResultEntry, TelemetrySampleBuffer
 
 # date_start/date_end are timezone-aware here on purpose - that's exactly what OpenF1 actually
 # returns, and what previously blew up asyncpg's plain-TIMESTAMP codec (see _to_naive_utc).

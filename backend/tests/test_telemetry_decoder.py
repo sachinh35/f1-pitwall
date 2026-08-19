@@ -1,10 +1,10 @@
-"""Golden-file tests for utils/telemetry_decoder.py against real captured F1 payloads."""
+"""Golden-file tests for live/telemetry_decoder.py against real captured F1 payloads."""
 import base64
 import json
 import zlib
 from pathlib import Path
 
-from utils.telemetry_decoder import (
+from live.telemetry_decoder import (
     CHANNEL_BRAKE_PCT,
     CHANNEL_DRS,
     CHANNEL_GEAR,

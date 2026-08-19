@@ -1,4 +1,4 @@
-"""Unit tests for utils/session_state.py, grounded in real captured payloads where possible."""
+"""Unit tests for live/session_state.py, grounded in real captured payloads where possible."""
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -6,7 +6,7 @@ from typing import Dict
 
 import pytest
 
-from utils.session_state import SessionState, parse_gap_seconds, deep_merge, parse_lap_time_to_seconds
+from live.session_state import SessionState, parse_gap_seconds, deep_merge, parse_lap_time_to_seconds
 
 FIXTURES = json.loads((Path(__file__).parent / "fixtures" / "real_stream_samples.json").read_text())
 

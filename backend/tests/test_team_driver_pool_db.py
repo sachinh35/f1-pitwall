@@ -1,9 +1,9 @@
-"""Unit tests for utils/team_driver_pool_db.py."""
+"""Unit tests for db/team_driver_pool_db.py."""
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from utils import team_driver_pool_db
+from db import team_driver_pool_db
 
 
 def _mock_db(monkeypatch: pytest.MonkeyPatch, rows: list) -> AsyncMock:

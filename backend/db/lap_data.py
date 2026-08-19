@@ -11,14 +11,14 @@ from typing import List
 from api_pydantic_models.lap_data import LapDataDB, LapDataResponse
 from constants.openf1_api_endpoints import LAPS_API_URL
 from openf1_pydantic_models.f1_laps import F1LapData
-from utils.cache_first_fetch import get_or_fetch
-from utils.database import (
+from db.cache_first_fetch import get_or_fetch
+from db.database import (
     check_session_data_exists,
     get_lap_data_from_db,
     insert_lap_data_batch,
 )
-from utils.http_client import fetch_json
-from utils.time_utils import normalize_datetime
+from common.http_client import fetch_json
+from common.time_utils import normalize_datetime
 
 logger = logging.getLogger(__name__)
 

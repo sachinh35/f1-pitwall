@@ -1,4 +1,4 @@
-"""Unit tests for utils/live_stream.py's F1SignalRStreamer: the sink abstraction (task
+"""Unit tests for live/live_stream.py's F1SignalRStreamer: the sink abstraction (task
 requirement - the standalone capture script must not depend on LiveSessionPipeline's
 DB/decode machinery) and the self-healing reconnect loop in run() (task requirement -
 raw capture must survive a SignalR disconnect/error without the whole process needing
@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from utils.live_session_pipeline import LiveSessionPipeline, unregister_pipeline
-from utils.live_stream import F1SignalRStreamer
-from utils.raw_capture import RawStreamArchiver
+from live.live_session_pipeline import LiveSessionPipeline, unregister_pipeline
+from live.live_stream import F1SignalRStreamer
+from live.raw_capture import RawStreamArchiver
 
 
 def _fake_sink() -> MagicMock:
@@ -63,7 +63,7 @@ def test_run_retries_after_connect_raises_and_stops_once_connected(monkeypatch: 
     monkeypatch.setattr(streamer, "connect", fake_connect)
     monkeypatch.setattr(streamer, "subscribe_to_events", MagicMock())
     monkeypatch.setattr(streamer, "disconnect", MagicMock())
-    monkeypatch.setattr("utils.live_stream._RECONNECT_INITIAL_BACKOFF_SECONDS", 0.01)
+    monkeypatch.setattr("live.live_stream._RECONNECT_INITIAL_BACKOFF_SECONDS", 0.01)
 
     streamer.run()
 
@@ -79,7 +79,7 @@ def test_stop_interrupts_a_long_reconnect_backoff_wait(monkeypatch: pytest.Monke
     monkeypatch.setattr(streamer, "connect", MagicMock(side_effect=RuntimeError("always fails")))
     monkeypatch.setattr(streamer, "subscribe_to_events", MagicMock())
     monkeypatch.setattr(streamer, "disconnect", MagicMock())
-    monkeypatch.setattr("utils.live_stream._RECONNECT_INITIAL_BACKOFF_SECONDS", 30.0)
+    monkeypatch.setattr("live.live_stream._RECONNECT_INITIAL_BACKOFF_SECONDS", 30.0)
 
     thread = threading.Thread(target=streamer.run, daemon=True)
     thread.start()
@@ -105,7 +105,7 @@ def test_run_never_raises_out_of_connect_failures(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(streamer, "connect", fake_connect)
     monkeypatch.setattr(streamer, "subscribe_to_events", MagicMock())
     monkeypatch.setattr(streamer, "disconnect", MagicMock())
-    monkeypatch.setattr("utils.live_stream._RECONNECT_INITIAL_BACKOFF_SECONDS", 0.01)
+    monkeypatch.setattr("live.live_stream._RECONNECT_INITIAL_BACKOFF_SECONDS", 0.01)
 
     streamer.run()  # must not raise
 

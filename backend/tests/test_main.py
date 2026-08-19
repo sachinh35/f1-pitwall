@@ -5,7 +5,7 @@ Unit tests for the F1TV token-status endpoints (GET /f1tv-token/status, POST
 Uses FastAPI's TestClient without entering it as a context manager, so the
 app's startup event (DatabaseManager.get_pool(), which needs a real Postgres) is
 never triggered - none of these endpoints touch the database. f1_auth is mocked
-at the module level (main.f1_auth), matching how utils/live_session_pipeline.py's
+at the module level (main.f1_auth), matching how live/live_session_pipeline.py's
 tests mock f1_auth.validate_subscription_token.
 """
 from unittest.mock import patch
@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
-from utils.f1_auth import TokenValidity
+from auth.f1_auth import TokenValidity
 
 client = TestClient(main.app)
 

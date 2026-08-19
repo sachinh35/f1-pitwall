@@ -9,7 +9,7 @@ not on every message, so the prediction is always as fresh as the driver's last 
 without hammering the Gemini API on every timing tick. Formation-lap (lap_number == 0)
 completions are skipped by the caller - a formation lap isn't representative racing pace.
 
-Follows the exact same thin-wrapper-around-one-function shape as utils/radio_analysis.py:
+Follows the exact same thin-wrapper-around-one-function shape as team_radio/radio_analysis.py:
 tests monkeypatch _get_agent() rather than hitting the real Gemini API (see
 tests/test_tyre_strategy_prediction.py).
 """
@@ -25,7 +25,7 @@ from strands import Agent
 from strands.models.gemini import GeminiModel
 
 from config.gemini_config import GeminiConfig
-from utils.session_state import SessionState, parse_gap_seconds
+from live.session_state import SessionState, parse_gap_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +250,7 @@ def _get_model() -> GeminiModel:
     module never requires GEMINI_API_KEY to be set (only actually calling predict_tyre_strategy
     does).
 
-    Deliberately NOT a cached Agent (unlike utils/radio_analysis.py's _get_agent): a Strands
+    Deliberately NOT a cached Agent (unlike team_radio/radio_analysis.py's _get_agent): a Strands
     Agent instance raises strands.types.exceptions.ConcurrencyException on a second overlapping
     call ("Agent is already processing a request") - confirmed live, this fires constantly
     here since multiple drivers routinely complete their lap within a second or two of each

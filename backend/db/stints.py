@@ -11,13 +11,13 @@ from typing import List
 from api_pydantic_models.stints import StintDB, StintResponse
 from constants.openf1_api_endpoints import STINTS_API_URL
 from openf1_pydantic_models.f1_stints import F1Stint
-from utils.cache_first_fetch import get_or_fetch
-from utils.database import (
+from db.cache_first_fetch import get_or_fetch
+from db.database import (
     check_session_stints_exists,
     get_stints_from_db,
     insert_stints_batch,
 )
-from utils.http_client import fetch_json
+from common.http_client import fetch_json
 
 logger = logging.getLogger(__name__)
 

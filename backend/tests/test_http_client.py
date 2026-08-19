@@ -1,5 +1,5 @@
 """
-Unit tests for utils/http_client.py.
+Unit tests for common/http_client.py.
 
 Uses httpx.MockTransport (built into httpx, no extra test dependency) to
 stub network calls, by patching the module's `httpx.AsyncClient` reference
@@ -11,7 +11,7 @@ from typing import Any, Callable
 import httpx
 import pytest
 
-from utils import http_client
+from common import http_client
 
 _RealAsyncClient = httpx.AsyncClient  # captured before any monkeypatching, to avoid self-recursion
 

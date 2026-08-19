@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 
 from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
-from utils.team_radio_db import TeamRadioDB
+from db.team_radio_db import TeamRadioDB
 
 
 class StartStreamRequest(BaseModel):
@@ -70,7 +70,7 @@ class SimulateStreamRequest(BaseModel):
 
 class AttachStreamRequest(BaseModel):
     """Request model for attaching the backend to an in-progress standalone capture
-    (scripts/capture_stream.py) by tailing its raw jsonl file - see utils/live_tail.py."""
+    (scripts/capture_stream.py) by tailing its raw jsonl file - see live/live_tail.py."""
     session_name: Optional[str] = Field(
         None,
         description="Matches scripts/capture_stream.py's --session-name - resolves to "

@@ -1,5 +1,5 @@
 """
-Unit tests for utils/team_radio_db.py - previously only exercised indirectly
+Unit tests for db/team_radio_db.py - previously only exercised indirectly
 through mocked calls in test_team_radio_pipeline.py. This tests the actual
 SQL-building logic directly, in particular the dynamic `_update` helper that
 builds an UPDATE statement from arbitrary kwargs.
@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from utils import team_radio_db
-from utils.team_radio_db import RadioClipStatus
+from db import team_radio_db
+from db.team_radio_db import RadioClipStatus
 
 
 def _mock_db(monkeypatch: pytest.MonkeyPatch, fetchval_result=None, fetch_result=None):

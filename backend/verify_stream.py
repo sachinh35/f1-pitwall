@@ -1,7 +1,8 @@
 import asyncio
 import logging
 import sys
-from utils import f1_auth, live_stream
+from auth import f1_auth
+from live import live_stream
 
 # Configure logging
 logging.basicConfig(

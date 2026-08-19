@@ -5,8 +5,8 @@ The SignalR connection/negotiation/auth machinery below is unchanged from
 the original implementation - that part already worked. What changed is
 everything downstream of "a message arrived": instead of ad-hoc, half-finished
 parsing (the old `_process_timing_data`/`_handle_message_async`), every
-message now flows through a `LiveSessionPipeline` (utils/live_session_pipeline.py),
-the same one utils/replay.py drives for simulated sessions - so live and
+message now flows through a `LiveSessionPipeline` (live/live_session_pipeline.py),
+the same one live/replay.py drives for simulated sessions - so live and
 replayed sessions behave identically.
 """
 import asyncio
@@ -22,7 +22,7 @@ import httpx
 from signalrcore.hub_connection_builder import HubConnectionBuilder
 
 from api_pydantic_models.confirmed_roster import ConfirmedRosterEntry
-from utils.live_session_pipeline import LiveSessionPipeline, get_pipeline, register_pipeline, unregister_pipeline
+from live.live_session_pipeline import LiveSessionPipeline, get_pipeline, register_pipeline, unregister_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ _RECONNECT_BACKOFF_MULTIPLIER = 2.0
 class StreamSink(Protocol):
     """What F1SignalRStreamer needs from whatever consumes its messages - satisfied by both
     LiveSessionPipeline (decode/broadcast/persist, the backend-owned live path) and
-    RawStreamArchiver (utils/raw_capture.py - archive-only, no DB/decode dependency, used by
+    RawStreamArchiver (live/raw_capture.py - archive-only, no DB/decode dependency, used by
     the standalone capture script so it never depends on anything that could make it crash)."""
 
     def log_event(self, event_type: str, data: Any) -> None: ...
@@ -105,7 +105,7 @@ class F1SignalRStreamer:
         # keeps its existing behavior unchanged - a full LiveSessionPipeline (decode,
         # SSE broadcast, DB persistence). The standalone capture script passes a lean
         # RawStreamArchiver instead, so it never depends on Postgres/decode logic - see
-        # utils/raw_capture.py and StreamSink above.
+        # live/raw_capture.py and StreamSink above.
         if sink is not None:
             self.sink: StreamSink = sink
             self.pipeline: Optional[LiveSessionPipeline] = sink if isinstance(sink, LiveSessionPipeline) else None
@@ -466,7 +466,7 @@ def start_stream(
     Start a new live F1 SignalR stream in a background thread.
 
     `sink`/`stream_id`/`daemon` exist for scripts/capture_stream.py, the standalone raw
-    capture process (see utils/raw_capture.py's RawStreamArchiver) - it passes a lean
+    capture process (see live/raw_capture.py's RawStreamArchiver) - it passes a lean
     archiver sink, a stable stream_id (so restarts keep the same identity/filename), and
     daemon=False (a daemon thread dies the instant its process's main thread exits, which
     is fine for a request handler inside the FastAPI process but wrong for a script whose

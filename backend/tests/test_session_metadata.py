@@ -1,11 +1,11 @@
-"""Unit tests for utils/session_metadata.py."""
+"""Unit tests for db/session_metadata.py."""
 from datetime import datetime
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
-from utils import session_metadata
+from db import session_metadata
 
 _RAW_SESSION = {
     "circuit_key": 63,

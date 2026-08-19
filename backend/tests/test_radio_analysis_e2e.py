@@ -7,7 +7,7 @@ Real, no-mocks end-to-end run of the team-radio pipeline's two external-service 
    Mark 1.0 - confirmed via the Commons API before committing it; not an F1 broadcast clip,
    since those are copyrighted, but this is real recorded human speech, which is exactly
    what's needed to prove the Whisper leg of the pipeline actually works end-to-end).
-2. A real Gemini call through utils/radio_analysis.py, using realistic F1-radio-style
+2. A real Gemini call through team_radio/radio_analysis.py, using realistic F1-radio-style
    transcript text (the sample audio above isn't F1 radio, so it can't exercise the
    notability prompt meaningfully - constructed text is used for that leg instead, same
    as how the prompt itself was iterated against real Gemini calls during development).
@@ -23,9 +23,9 @@ import pytest
 from google.genai.errors import ClientError
 
 from config.gemini_config import GeminiConfig
-from utils.radio_analysis import RadioMessageAnalysis, analyze_transcript
-from utils.team_radio_pipeline import resolve_audio_url
-from utils.whisper_transcriber import DEFAULT_MODELS_DIR, DEFAULT_MODEL_NAME
+from team_radio.radio_analysis import RadioMessageAnalysis, analyze_transcript
+from team_radio.team_radio_pipeline import resolve_audio_url
+from team_radio.whisper_transcriber import DEFAULT_MODELS_DIR, DEFAULT_MODEL_NAME
 
 AUDIO_FIXTURE = Path(__file__).parent / "fixtures" / "audio" / "public_domain_speech_sample.wav"
 _WHISPER_MODEL_AVAILABLE = (DEFAULT_MODELS_DIR / f"ggml-{DEFAULT_MODEL_NAME}.bin").exists()
@@ -47,7 +47,7 @@ async def _analyze_or_skip(**kwargs) -> RadioMessageAnalysis:
 @pytest.mark.skipif(not _WHISPER_MODEL_AVAILABLE, reason="No local Whisper model cached - see whisper_transcriber.py")
 @pytest.mark.asyncio
 async def test_whisper_transcribes_a_real_downloaded_speech_sample() -> None:
-    from utils.whisper_transcriber import transcribe
+    from team_radio.whisper_transcriber import transcribe
 
     assert AUDIO_FIXTURE.exists(), f"missing audio fixture: {AUDIO_FIXTURE}"
 
@@ -114,9 +114,9 @@ def test_resolve_audio_url_downloads_a_real_historical_team_radio_clip() -> None
 )
 @pytest.mark.asyncio
 async def test_full_pipeline_transcribe_then_classify_end_to_end() -> None:
-    """The two legs chained together exactly as utils/team_radio_pipeline.py runs them:
+    """The two legs chained together exactly as team_radio/team_radio_pipeline.py runs them:
     real audio in, real transcript out, real transcript in, real classification out."""
-    from utils.whisper_transcriber import transcribe
+    from team_radio.whisper_transcriber import transcribe
 
     transcript = await transcribe(AUDIO_FIXTURE)
     assert transcript

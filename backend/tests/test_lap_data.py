@@ -1,5 +1,5 @@
 """
-Equivalence tests for the DRY-refactored utils/lap_data.py (Milestone 2) -
+Equivalence tests for the DRY-refactored db/lap_data.py (Milestone 2) -
 verifies get_lap_data_for_session still wires check/get/fetch/insert together
 correctly after moving that orchestration into the shared get_or_fetch()
 helper, which is itself covered in isolation by test_cache_first_fetch.py.
@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from api_pydantic_models.lap_data import LapDataDB
-from utils import lap_data, race_control, stints
+from db import lap_data, race_control, stints
 
 
 @pytest.mark.asyncio

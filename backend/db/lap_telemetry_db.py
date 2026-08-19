@@ -1,6 +1,6 @@
 """
 Read access for lap_telemetry and lap_car_position - the full-resolution,
-per-driver-per-lap arrays written by utils/live_persistence.py at lap
+per-driver-per-lap arrays written by db/live_persistence.py at lap
 boundaries. Nothing has read these back until now (Milestone 6 only wrote
 to them); this is what the lap-comparison feature fetches from.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
 
-from utils.database import DatabaseManager
+from db.database import DatabaseManager
 
 
 @dataclass

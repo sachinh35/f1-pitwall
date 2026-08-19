@@ -1,5 +1,5 @@
 """
-Unit tests for utils/f1_auth.py's browser-based auth flow (ported from FastF1's
+Unit tests for auth/f1_auth.py's browser-based auth flow (ported from FastF1's
 fastf1/internals/f1auth.py - see ATTRIBUTION.md). Real JWKS/network verification is
 always mocked (validate_subscription_token) - these tests never call F1's real API,
 and the real ~/.local/share/f1-dashboard/f1auth.json is never touched (AUTH_DATA_FILE
@@ -16,7 +16,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
 
-from utils import f1_auth
+from auth import f1_auth
 
 
 @pytest.fixture(autouse=True)
