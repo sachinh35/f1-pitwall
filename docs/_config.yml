@@ -1,0 +1,11 @@
+title: F1 Pit Wall
+description: A live F1 race dashboard - timing tower, race control feed, team radio, and car telemetry, pit-wall style.
+theme: jekyll-theme-cayman
+
+show_downloads: false
+
+# Sidebar/nav links shown by the cayman theme header, in order.
+header_pages:
+  - architecture.md
+  - setup.md
+  - troubleshooting.md
