@@ -297,6 +297,15 @@ class StateDiff:
     # cleared) - not the alerts themselves, since those live on SessionState.battle_radar
     # and diff_to_wire reads the current value for each touched driver from there.
     battle_radar_touched: List[int] = field(default_factory=list)
+    # Every sample this Position.z message actually carried, per driver, in chronological
+    # order - F1 batches ~5 samples spaced ~260ms apart into one message (confirmed live:
+    # messages arrive roughly once a second, each containing a burst covering that whole
+    # second). diff_to_wire used to forward only the buffer's single latest point per
+    # message (state.latest_position_sample), silently discarding the other ~80% of F1's
+    # own position resolution - confirmed live as the cause of visibly jagged/stepped track
+    # map motion despite F1 itself streaming smoothly. Carrying the full batch here lets the
+    # wire message (and the frontend's playback) use the real ~4Hz resolution instead.
+    new_position_samples: Dict[int, List[Dict[str, Any]]] = field(default_factory=dict)
 
 
 class SessionState:
@@ -711,6 +720,9 @@ class SessionState:
                     utc=sample.utc, x=entry.x, y=entry.y, z=entry.z, status=entry.status,
                 )
                 diff.changed_driver_numbers.append(driver_number)
+                diff.new_position_samples.setdefault(driver_number, []).append(
+                    {"x": entry.x, "y": entry.y, "z": entry.z, "status": entry.status, "utc": sample.utc.isoformat()}
+                )
         return diff
 
     def _apply_driver_list(self, payload: Dict[str, Any]) -> StateDiff:
@@ -828,7 +840,20 @@ class SessionState:
         deep_merge(self.session_data, payload)
         diff = StateDiff(event_name="SessionData")
         series = payload.get("Series")
-        if isinstance(series, dict):
+        if isinstance(series, list):
+            # The Subscribe RPC's initial-state result (confirmed live) sends the *whole*
+            # part history as a plain array - e.g. [{"QualifyingPart": 1, ...},
+            # {"QualifyingPart": 2, ...}] for a client connecting mid-Q2 - rather than the
+            # single-entry index-keyed dict a live transition diff sends (handled below).
+            # Only catching self.qualifying_part up to the last entry here, not routing
+            # through the transition branch below: there's no live driver/position state
+            # to snapshot for a part that already ended before this connection existed, and
+            # calling _snapshot_qualifying_results here would upsert an empty/bogus result
+            # over whatever a stream that actually watched that part end already persisted.
+            parts = [e.get("QualifyingPart") for e in series if isinstance(e, dict) and e.get("QualifyingPart") is not None]
+            if parts:
+                self.qualifying_part = f"Q{parts[-1]}"
+        elif isinstance(series, dict):
             for entry in series.values():
                 part = entry.get("QualifyingPart") if isinstance(entry, dict) else None
                 if part is None:
@@ -841,6 +866,17 @@ class SessionState:
                         # reassigned) - the snapshot must be tagged with that, not new_part.
                         diff.qualifying_part_results = self._snapshot_qualifying_results(self.qualifying_part)
                     self.qualifying_gaps = {}
+                    # Seed (not clear to {}) rather than leaving the ending segment's
+                    # ExtrapolatedClock state in place: confirmed live, the new segment's
+                    # first ExtrapolatedClock message carries the fresh Remaining but omits
+                    # Extrapolating entirely, so _apply_replace's deep_merge would otherwise
+                    # leave whichever value the *previous* segment last had - always False,
+                    # since a segment only ever ends by ticking to Remaining="00:00:00" with
+                    # an explicit Extrapolating=False. That stale False silently disabled the
+                    # frontend's countdown tick for the ~60s until F1's next message re-sent
+                    # Extrapolating=True. Seeding True here is overwritten immediately if F1's
+                    # own next message explicitly says otherwise (e.g. a red-flag pause).
+                    self.extrapolated_clock = {"Extrapolating": True}
                 self.qualifying_part = new_part
         return diff
 

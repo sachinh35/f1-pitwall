@@ -133,6 +133,9 @@ export interface PositionSample {
   y: number;
   z: number;
   status: string;
+  /** Only present on the raw wire batch (see live_session_pipeline.py's diff_to_wire) -
+   * absent once a sample has been interpolated into positionsRef's rendered value. */
+  utc?: string;
 }
 
 export interface BattleRadarLapGap {

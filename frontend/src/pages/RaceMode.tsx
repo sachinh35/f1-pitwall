@@ -154,6 +154,45 @@ const RaceMode: React.FC = () => {
   // since F1's feed never sends circuit geometry (see TrackMap.tsx).
   const trailRef = useRef<Record<string, { x: number; y: number }[]>>({});
   const MAX_TRAIL_POINTS_PER_DRIVER = 2000;
+  // Backend now forwards the *whole* Position.z batch per driver (~5 real samples spaced
+  // ~260ms apart, F1's true resolution) instead of just the newest point - see
+  // live/live_session_pipeline.py's diff_to_wire. This ref holds each driver's current
+  // batch plus when playback of it started; a dedicated rAF loop below steps positionsRef
+  // through the batch's real points over the real timespan they cover, so TrackMap (which
+  // just reads positionsRef.current every frame, unchanged) renders true ~4Hz motion
+  // instead of one jump per second.
+  const positionPlaybackRef = useRef<
+    Record<string, { samples: PositionSample[]; startMs: number; durationMs: number }>
+  >({});
+
+  useEffect(() => {
+    let rafId: number;
+    const step = () => {
+      const now = performance.now();
+      const playback = positionPlaybackRef.current;
+      const next: Record<string, PositionSample> = { ...positionsRef.current };
+      for (const [driverStr, { samples, startMs, durationMs }] of Object.entries(playback)) {
+        if (samples.length === 0) continue;
+        const frac = durationMs > 0 ? Math.min(1, Math.max(0, (now - startMs) / durationMs)) : 1;
+        const scaled = frac * (samples.length - 1);
+        const i0 = Math.floor(scaled);
+        const i1 = Math.min(i0 + 1, samples.length - 1);
+        const localT = scaled - i0;
+        const a = samples[i0];
+        const b = samples[i1];
+        next[driverStr] = {
+          x: a.x + (b.x - a.x) * localT,
+          y: a.y + (b.y - a.y) * localT,
+          z: a.z + (b.z - a.z) * localT,
+          status: b.status,
+        };
+      }
+      positionsRef.current = next;
+      rafId = requestAnimationFrame(step);
+    };
+    rafId = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(rafId);
+  }, []);
   // Per-metric, per-driver lap history for the "discrete" Compare Widget metrics (sector
   // times, lap time) - these only produce a new definitive value once per lap (or per
   // sector) per driver, from TimingData rather than CarData.z, so unlike telemetryRef they
@@ -202,6 +241,7 @@ const RaceMode: React.FC = () => {
     setState(INITIAL_STATE);
     telemetryRef.current = {};
     positionsRef.current = {};
+    positionPlaybackRef.current = {};
     trailRef.current = {};
     lapMetricHistoryRef.current = { sector1: {}, sector2: {}, sector3: {}, lapTime: {} };
     currentLapRef.current = {};
@@ -457,11 +497,20 @@ const RaceMode: React.FC = () => {
       },
       "Position.z": (data) => {
         if (data.positions) {
-          positionsRef.current = { ...positionsRef.current, ...data.positions };
-          for (const [driverStr, pos] of Object.entries(data.positions)) {
+          const now = performance.now();
+          for (const [driverStr, samples] of Object.entries(data.positions)) {
+            if (samples.length === 0) continue;
+            const firstUtc = samples[0].utc ? Date.parse(samples[0].utc) : NaN;
+            const lastUtc = samples[samples.length - 1].utc ? Date.parse(samples[samples.length - 1].utc!) : NaN;
+            const durationMs =
+              !Number.isNaN(firstUtc) && !Number.isNaN(lastUtc) ? Math.max(0, lastUtc - firstUtc) : 0;
+            positionPlaybackRef.current[driverStr] = { samples, startMs: now, durationMs };
+
             const trail = trailRef.current[driverStr] ?? (trailRef.current[driverStr] = []);
-            trail.push({ x: pos.x, y: pos.y });
-            if (trail.length > MAX_TRAIL_POINTS_PER_DRIVER) trail.shift();
+            for (const sample of samples) {
+              trail.push({ x: sample.x, y: sample.y });
+              if (trail.length > MAX_TRAIL_POINTS_PER_DRIVER) trail.shift();
+            }
           }
           setHasPositionData(true);
         }
@@ -533,7 +582,7 @@ const RaceMode: React.FC = () => {
     <div className="race-mode">
       <div className="rm-header">
         <h1>
-          <span className="display">Race Mode</span>
+          <span className="display">{isQualifying ? "Qualifying Mode" : "Race Mode"}</span>
           {connected && <span className="rm-live-pill">LIVE</span>}
           {isQualifying && (
             <span className="rm-session-pill qualifying">

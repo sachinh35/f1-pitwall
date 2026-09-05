@@ -78,6 +78,19 @@
 }
 .rm-live-pill::before {
   content: "\25CF ";
+  animation: rm-live-blink 1s ease-in-out infinite;
+}
+
+@keyframes rm-live-blink {
+  0%, 40% { opacity: 1; }
+  70% { opacity: 0.15; }
+  100% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rm-live-pill::before {
+    animation: none;
+  }
 }
 
 .rm-session-pill {

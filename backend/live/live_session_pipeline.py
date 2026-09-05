@@ -228,11 +228,11 @@ def diff_to_wire(diff: StateDiff, state: SessionState) -> Dict[str, Any]:
             if (sample := state.latest_telemetry_sample(d)) is not None
         }
     elif diff.event_name == "Position.z":
-        wire["positions"] = {
-            str(d): sample
-            for d in set(diff.changed_driver_numbers)
-            if (sample := state.latest_position_sample(d)) is not None
-        }
+        # The *full* batch of samples this message carried per driver (see
+        # StateDiff.new_position_samples), not just state.latest_position_sample's single
+        # latest point - the frontend plays these back at their real spacing so on-screen
+        # motion matches F1's true ~4Hz update rate instead of jumping once a second.
+        wire["positions"] = {str(d): samples for d, samples in diff.new_position_samples.items()}
 
     if diff.completed_laps:
         wire["completed_laps"] = [_completed_lap_to_wire(lap) for lap in diff.completed_laps]

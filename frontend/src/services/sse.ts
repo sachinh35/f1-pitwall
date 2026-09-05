@@ -65,7 +65,7 @@ export interface RaceModeEventMap {
   RaceControlMessages: { race_control_messages?: Record<string, RaceControlEntry> };
   driver_roster: { driver_roster?: Record<string, DriverRosterWireEntry> };
   "CarData.z": { telemetry?: Record<string, TelemetrySample> };
-  "Position.z": { positions?: Record<string, PositionSample> };
+  "Position.z": { positions?: Record<string, PositionSample[]> };
   TeamRadio: { new_radio_captures?: NewRadioCaptureWire[] };
   RADIO_CLIP_READY: { row_id: number };
   RADIO_TRANSCRIPT_READY: { row_id: number };
