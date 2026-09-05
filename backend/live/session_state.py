@@ -347,6 +347,12 @@ class SessionState:
         # from F1's own Stats[index].TimeDiffToFastest - see _recompute_qualifying_gaps
         # for why that field is unreliable. A driver with no valid lap yet has no entry.
         self.qualifying_gaps: Dict[int, float] = {}
+        # Last known-good (non-empty) BestLapTime/gap per driver, surviving F1's own
+        # end-of-segment reset - see _recompute_qualifying_gaps and
+        # _snapshot_qualifying_results for why these exist separately from
+        # self.drivers[d]["BestLapTime"] and self.qualifying_gaps themselves.
+        self._last_known_best_lap_seconds: Dict[int, float] = {}
+        self._last_known_qualifying_gaps: Dict[int, float] = {}
         # Guards against re-persisting the same final-segment snapshot on every repeated
         # SessionStatus "Finalised" message - see _apply_session_status.
         self._final_results_captured: bool = False
@@ -537,7 +543,15 @@ class SessionState:
         showing a nonzero gap).
 
         Recomputed for every driver whenever any one driver's BestLapTime changes, since a
-        new leader changes everyone's gap, not just theirs.
+        new leader changes everyone's gap, not just theirs. Also updates
+        _last_known_best_lap_seconds/_last_known_qualifying_gaps - confirmed live, F1's own
+        end-of-segment TimingData reset (BestLapTime cleared to "" for everyone) can arrive
+        *before* the SessionData QualifyingPart transition that triggers
+        _snapshot_qualifying_results (message order isn't guaranteed - observed both ways
+        across different real transitions), which would otherwise make that segment's
+        snapshot capture zeros/Nones instead of its real final times. Only ever updated
+        (never cleared) here, so it holds each driver's last real value straight through
+        that reset regardless of which message wins the race.
         """
         best_seconds: Dict[int, float] = {}
         for driver_number, fields in self.drivers.items():
@@ -549,10 +563,12 @@ class SessionState:
             self.qualifying_gaps = {}
             return
 
+        self._last_known_best_lap_seconds.update(best_seconds)
         leader_seconds = min(best_seconds.values())
         self.qualifying_gaps = {
             driver_number: round(seconds - leader_seconds, 3) for driver_number, seconds in best_seconds.items()
         }
+        self._last_known_qualifying_gaps.update(self.qualifying_gaps)
 
     def _advance_lap(self, driver_number: int, new_lap_number: int) -> Optional[CompletedLap]:
         """
@@ -898,8 +914,12 @@ class SessionState:
         """Every currently-known driver's final standing for `part` - see
         QualifyingResultEntry. Called the instant that segment ends (a QualifyingPart
         transition, or SessionStatus "Finalised" for the last segment - see
-        _apply_session_status), so Position/BestLapTime/qualifying_gaps still reflect that
-        segment's real result at the moment this runs."""
+        _apply_session_status). Position comes from self.drivers directly (F1 doesn't
+        reset it on a segment transition), but best lap time/gap come from
+        _last_known_best_lap_seconds/_last_known_qualifying_gaps rather than
+        self.drivers[d]["BestLapTime"]/self.qualifying_gaps directly - those two are
+        cleared by F1's own end-of-segment TimingData reset, which real captured data
+        confirms can arrive *before* the transition message that triggers this snapshot."""
         if part is None:
             return []
         results = []
@@ -911,8 +931,8 @@ class SessionState:
                     driver_number=driver_number,
                     qualifying_part=part,
                     position=position,
-                    best_lap_seconds=parse_lap_time_to_seconds(fields.get("BestLapTime", {}).get("Value")),
-                    gap_to_leader_seconds=self.qualifying_gaps.get(driver_number),
+                    best_lap_seconds=self._last_known_best_lap_seconds.get(driver_number),
+                    gap_to_leader_seconds=self._last_known_qualifying_gaps.get(driver_number),
                     eliminated=driver_number in self.eliminated_drivers,
                 )
             )

@@ -31,6 +31,7 @@ from api_pydantic_models.live_stream import (
     TokenStatusResponse,
     UpdateTokenRequest,
 )
+from api_pydantic_models.qualifying_results import GetQualifyingResultsResponse, QualifyingResultEntryResponse
 from api_pydantic_models.race_control import GetSessionRaceControlEventsResponse
 from api_pydantic_models.race_sesssions import GetAllSessionTypesResponse, GetSessionResultsResponse, SessionType
 from api_pydantic_models.races import GetAvailableYearsResponse, GetRacesForYearsResponse
@@ -41,6 +42,7 @@ from db import lap_data, lap_telemetry_db, race_control, race_session, stints, t
 from live import live_stream, live_tail, replay
 from db.database import DatabaseManager
 from db.lap_comparison import build_lap_trace, compute_delta_trace
+from db.live_persistence import get_qualifying_results_for_session
 from live.live_session_pipeline import get_pipeline
 from live.live_stream import STREAM_LOGS_DIR
 from db.team_driver_pool_db import get_team_driver_pool
@@ -180,6 +182,43 @@ async def get_session_race_control_events(session_key: int) -> GetSessionRaceCon
     except Exception as e:
         logging.exception("Error in get_session_race_control_events for session_key=%s", session_key)
         raise HTTPException(status_code=500, detail=f"Failed to fetch race control events: {str(e)}")
+
+
+@app.get("/session-qualifying-results/{session_key}")
+async def get_session_qualifying_results(session_key: int) -> GetQualifyingResultsResponse:
+    """
+    Every qualifying segment's persisted final standings for a session (see
+    live/session_state.py's QualifyingResultEntry) - polled by the frontend once a
+    segment ends, and on initial load to pick up segments that already ended before
+    the page connected.
+    """
+    try:
+        logging.info("Request: qualifying results for session_key=%s", session_key)
+        by_part = await get_qualifying_results_for_session(session_key)
+        response = GetQualifyingResultsResponse(
+            session_key=session_key,
+            results={
+                part: [
+                    QualifyingResultEntryResponse(
+                        driver_number=r.driver_number,
+                        position=r.position,
+                        best_lap_seconds=r.best_lap_seconds,
+                        gap_to_leader_seconds=r.gap_to_leader_seconds,
+                        eliminated=r.eliminated,
+                    )
+                    for r in entries
+                ]
+                for part, entries in by_part.items()
+            },
+        )
+        logging.info(
+            "Response: returning qualifying results for session_key=%s (%s)",
+            session_key, {part: len(entries) for part, entries in response.results.items()},
+        )
+        return response
+    except Exception as e:
+        logging.exception("Error in get_session_qualifying_results for session_key=%s", session_key)
+        raise HTTPException(status_code=500, detail=f"Failed to fetch qualifying results: {str(e)}")
 
 
 @app.post("/authenticate-f1tv", response_model=AuthenticateResponse)

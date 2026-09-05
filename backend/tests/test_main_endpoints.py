@@ -125,6 +125,44 @@ def test_get_session_race_control_events_failure_returns_500() -> None:
     assert response.status_code == 500
 
 
+# ---- GET /session-qualifying-results/{session_key} ----
+
+def test_get_session_qualifying_results_success() -> None:
+    from live.session_state import QualifyingResultEntry
+
+    fake_results = {
+        "Q1": [
+            QualifyingResultEntry(
+                driver_number=1, qualifying_part="Q1", position=1,
+                best_lap_seconds=82.612, gap_to_leader_seconds=0.0, eliminated=False,
+            ),
+        ],
+    }
+    with patch.object(main, "get_qualifying_results_for_session", new=AsyncMock(return_value=fake_results)):
+        response = client.get("/session-qualifying-results/123")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session_key"] == 123
+    assert body["results"]["Q1"] == [
+        {"driver_number": 1, "position": 1, "best_lap_seconds": 82.612, "gap_to_leader_seconds": 0.0, "eliminated": False}
+    ]
+
+
+def test_get_session_qualifying_results_empty() -> None:
+    with patch.object(main, "get_qualifying_results_for_session", new=AsyncMock(return_value={})):
+        response = client.get("/session-qualifying-results/123")
+    assert response.status_code == 200
+    assert response.json() == {"session_key": 123, "results": {}}
+
+
+def test_get_session_qualifying_results_failure_returns_500() -> None:
+    with patch.object(
+        main, "get_qualifying_results_for_session", new=AsyncMock(side_effect=RuntimeError("boom"))
+    ):
+        response = client.get("/session-qualifying-results/123")
+    assert response.status_code == 500
+
+
 # ---- POST /authenticate-f1tv ----
 
 def test_authenticate_f1tv_success() -> None:

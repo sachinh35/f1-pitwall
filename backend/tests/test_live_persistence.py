@@ -403,6 +403,41 @@ async def test_persist_qualifying_results_no_op_for_empty_list(monkeypatch: pyte
     mock_conn.executemany.assert_not_awaited()
 
 
+# ---- get_qualifying_results_for_session (mocked DB) ----
+
+@pytest.mark.asyncio
+async def test_get_qualifying_results_for_session_groups_by_part(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_conn = _mock_db(monkeypatch)
+    mock_conn.fetch.return_value = [
+        {"qualifying_part": "Q1", "driver_number": 1, "position": 1, "best_lap_seconds": 80.0,
+         "gap_to_leader_seconds": 0.0, "eliminated": False},
+        {"qualifying_part": "Q1", "driver_number": 22, "position": 22, "best_lap_seconds": None,
+         "gap_to_leader_seconds": None, "eliminated": True},
+        {"qualifying_part": "Q2", "driver_number": 1, "position": 1, "best_lap_seconds": 79.0,
+         "gap_to_leader_seconds": 0.0, "eliminated": False},
+    ]
+
+    result = await live_persistence.get_qualifying_results_for_session(9850)
+
+    assert list(result.keys()) == ["Q1", "Q2"]
+    assert len(result["Q1"]) == 2
+    assert result["Q1"][0] == QualifyingResultEntry(
+        driver_number=1, qualifying_part="Q1", position=1,
+        best_lap_seconds=80.0, gap_to_leader_seconds=0.0, eliminated=False,
+    )
+    assert len(result["Q2"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_qualifying_results_for_session_empty_when_no_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_conn = _mock_db(monkeypatch)
+    mock_conn.fetch.return_value = []
+
+    result = await live_persistence.get_qualifying_results_for_session(9850)
+
+    assert result == {}
+
+
 # ---- persist_total_laps (mocked DB) ----
 
 @pytest.mark.asyncio

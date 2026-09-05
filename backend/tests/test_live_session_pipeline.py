@@ -862,3 +862,73 @@ def test_diff_to_wire_race_control_normalization_does_not_mutate_stored_state() 
     diff = state.apply("RaceControlMessages", {"Messages": {"1": {"Category": "flag", "Message": "GREEN LIGHT"}}})
     diff_to_wire(diff, state)
     assert state.race_control_messages["1"]["Category"] == "flag"
+
+
+# ---- session-scoped archive mirror (scripts/merge_stream_logs.py's live counterpart) ----
+
+
+@pytest.mark.asyncio
+async def test_session_mirror_opens_once_session_key_known(tmp_path: Path) -> None:
+    archive_path = tmp_path / "f1_stream_1.jsonl"
+    pipeline = LiveSessionPipeline(stream_id="test-mirror-1", archive_path=archive_path)
+    assert pipeline._session_mirror_file is None
+
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+
+    assert pipeline._session_mirror_key == 9850
+    mirror_path = tmp_path / "f1_stream_session_9850.jsonl"
+    assert mirror_path.exists()
+    pipeline.close()
+
+
+@pytest.mark.asyncio
+async def test_session_mirror_receives_messages_after_session_key_known(tmp_path: Path) -> None:
+    archive_path = tmp_path / "f1_stream_1.jsonl"
+    pipeline = LiveSessionPipeline(stream_id="test-mirror-2", archive_path=archive_path)
+
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+    await pipeline.process_message("WeatherData", {"AirTemp": "25.1"})
+    pipeline.close()
+
+    mirror_content = (tmp_path / "f1_stream_session_9850.jsonl").read_text()
+    assert '"event_name": "WeatherData"' in mirror_content
+
+
+@pytest.mark.asyncio
+async def test_second_connection_to_same_session_appends_to_existing_mirror(tmp_path: Path) -> None:
+    """The whole point: a backend restart opens a brand-new per-connection archive_path
+    (as always), but if it reconnects to the *same* real F1 session, the mirror file from
+    the first connection keeps growing rather than starting over."""
+    first = LiveSessionPipeline(stream_id="test-mirror-3a", archive_path=tmp_path / "f1_stream_a.jsonl")
+    await first.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+    await first.process_message("WeatherData", {"AirTemp": "20.0"})
+    first.close()
+
+    second = LiveSessionPipeline(stream_id="test-mirror-3b", archive_path=tmp_path / "f1_stream_b.jsonl")
+    await second.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+    await second.process_message("WeatherData", {"AirTemp": "21.0"})
+    second.close()
+
+    mirror_content = (tmp_path / "f1_stream_session_9850.jsonl").read_text()
+    assert '"AirTemp": "20.0"' in mirror_content
+    assert '"AirTemp": "21.0"' in mirror_content
+
+
+@pytest.mark.asyncio
+async def test_session_mirror_noop_without_archive_path() -> None:
+    """No archive_path (e.g. a caller that doesn't want any raw capture at all) means no
+    mirror either - _ensure_session_mirror must not raise trying to build a path from None."""
+    pipeline = LiveSessionPipeline(stream_id="test-mirror-4")
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+    assert pipeline._session_mirror_file is None
+
+
+@pytest.mark.asyncio
+async def test_close_closes_session_mirror_file(tmp_path: Path) -> None:
+    pipeline = LiveSessionPipeline(stream_id="test-mirror-5", archive_path=tmp_path / "f1_stream_a.jsonl")
+    await pipeline.process_message("SessionInfo", {"Key": 9850, "Meeting": {"Key": 1275}})
+    assert pipeline._session_mirror_file is not None
+
+    pipeline.close()
+
+    assert pipeline._session_mirror_file is None

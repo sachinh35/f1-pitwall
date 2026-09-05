@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import CompareWidget from "../components/racemode/CompareWidget";
 import LapDeltaChart from "../components/racemode/LapDeltaChart";
+import QualifyingResultsPanel from "../components/racemode/QualifyingResultsPanel";
 import RaceControlFeed from "../components/racemode/RaceControlFeed";
 import SessionClock from "../components/racemode/SessionClock";
 import TeamRadioPanel from "../components/racemode/TeamRadioPanel";
@@ -10,7 +11,7 @@ import TrackMap from "../components/racemode/TrackMap";
 import TrackStatusBanner from "../components/racemode/TrackStatusBanner";
 import { clearLiveRoster, rosterEntryFromWire, setLiveRoster } from "../data/driverRoster";
 import type { DriverRosterWireEntry } from "../data/driverRoster";
-import { getTeamRadioForSession } from "../services/api";
+import { getQualifyingResults, getTeamRadioForSession, QualifyingResultEntry } from "../services/api";
 import { connectRaceModeStream } from "../services/sse";
 import "../styles/raceMode.css";
 import {
@@ -118,6 +119,7 @@ const RaceMode: React.FC = () => {
   const nextCompareWidgetId = useRef(DEFAULT_COMPARE_WIDGETS.length);
   const [radioRefreshSignal, setRadioRefreshSignal] = useState(0);
   const [teamRadioClips, setTeamRadioClips] = useState<TeamRadioClip[]>([]);
+  const [qualifyingResults, setQualifyingResults] = useState<Record<string, QualifyingResultEntry[]>>({});
   const [connected, setConnected] = useState(false);
   // Pins the right-column panel rail's height to the Timing Tower panel's actual rendered
   // height (see the .rm-right-rail div below), so Team Radio scrolls internally instead of
@@ -251,6 +253,7 @@ const RaceMode: React.FC = () => {
     seenRaceControlKeysRef.current = new Set();
     clearLiveRoster();
     setTeamRadioClips([]);
+    setQualifyingResults({});
     setConnected(true);
     setHasPositionData(false);
     setHasTelemetryData(false);
@@ -553,6 +556,24 @@ const RaceMode: React.FC = () => {
     refetchTeamRadio();
   }, [refetchTeamRadio, radioRefreshSignal]);
 
+  // Refetches whenever qualifyingPart advances (Q1->Q2->Q3), since that's exactly when the
+  // backend persists the segment that just ended (see live/session_state.py's
+  // _snapshot_qualifying_results) - also runs on initial connect so a page loaded mid-Q2/Q3
+  // picks up whichever earlier segments already finished before this connection existed.
+  const qualifyingPart = state.qualifyingPart;
+  useEffect(() => {
+    if (sessionKey == null) return;
+    let cancelled = false;
+    getQualifyingResults(sessionKey)
+      .then((results) => {
+        if (!cancelled) setQualifyingResults(results);
+      })
+      .catch((err) => console.error("Failed to fetch qualifying results", err));
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionKey, qualifyingPart]);
+
   const toggleDriver = (driverNumber: number) => {
     setSelectedDrivers((prev) => {
       if (prev.includes(driverNumber)) return prev.filter((d) => d !== driverNumber);
@@ -689,6 +710,13 @@ const RaceMode: React.FC = () => {
           <div className="rm-panel-label">Race Control</div>
           <RaceControlFeed messages={state.raceControlMessages} />
         </div>
+
+        {isQualifying && Object.values(qualifyingResults).some((entries) => entries.length > 0) && (
+          <div className="rm-panel rm-span-2">
+            <div className="rm-panel-label">Qualifying Results</div>
+            <QualifyingResultsPanel results={qualifyingResults} />
+          </div>
+        )}
       </div>
     </div>
   );

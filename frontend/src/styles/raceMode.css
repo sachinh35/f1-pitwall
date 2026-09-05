@@ -1198,3 +1198,79 @@
 .rm-clock .qualifying-part {
   color: var(--flag-yellow);
 }
+
+/* ---- qualifying results (collapsed-by-default per-segment cards) ---- */
+.rm-qualifying-results {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rm-qr-card {
+  border: 1px solid var(--line-800);
+  border-radius: 6px;
+  background: var(--panel-850);
+}
+.rm-qr-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+  font-family: "DIN Condensed", "Arial Narrow", sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--text-hi);
+  list-style: none;
+}
+.rm-qr-summary::-webkit-details-marker {
+  display: none;
+}
+.rm-qr-summary::before {
+  content: "\25B8";
+  margin-right: 8px;
+  color: var(--text-faint);
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+.rm-qr-card[open] .rm-qr-summary::before {
+  transform: rotate(90deg);
+}
+.rm-qr-count {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-faint);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.rm-qr-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  border-top: 1px solid var(--line-800);
+}
+.rm-qr-table th {
+  text-align: left;
+  padding: 6px 14px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  font-weight: 400;
+}
+.rm-qr-table td {
+  padding: 5px 14px;
+  border-top: 1px solid var(--line-800);
+}
+.rm-qr-table tr.eliminated {
+  opacity: 0.5;
+}
+.rm-qr-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+}

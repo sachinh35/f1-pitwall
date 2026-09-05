@@ -8,6 +8,7 @@ stream_logs/*
 audio_cache/*
 f1auth_data/*
 .pytest_cache/
+.coverage
 logs/
 .vite/
 demo/team_radio_sample/audio.mp3

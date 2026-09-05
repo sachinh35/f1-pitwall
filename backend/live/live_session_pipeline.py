@@ -267,6 +267,11 @@ class LiveSessionPipeline:
         self._next_subscriber_id: int = 0
         self._next_event_id: int = 0
         self._archive_file = open(archive_path, "a", encoding="utf-8") if archive_path else None
+        # Directory for _ensure_session_mirror's own file, not archive_path itself - see
+        # that method for why a *second* archive file exists alongside self._archive_file.
+        self._archive_dir: Optional[Path] = archive_path.parent if archive_path else None
+        self._session_mirror_file: Optional[Any] = None
+        self._session_mirror_key: Optional[int] = None
         self._background_tasks: Set[asyncio.Task] = set()
         self._messages_since_flush: int = 0
         self._session_meta_fetch_started: bool = False
@@ -336,11 +341,43 @@ class LiveSessionPipeline:
             "event_type": "message",
             "data": {"event_name": event_name, "payload": payload},
         }
-        self._archive_file.write(json.dumps(entry, default=str) + "\n")
+        line = json.dumps(entry, default=str) + "\n"
+        self._archive_file.write(line)
+        if self._session_mirror_file is not None:
+            self._session_mirror_file.write(line)
         self._messages_since_flush += 1
         if self._messages_since_flush >= 50:
             self._archive_file.flush()
+            if self._session_mirror_file is not None:
+                self._session_mirror_file.flush()
             self._messages_since_flush = 0
+
+    def _ensure_session_mirror(self) -> None:
+        """
+        Opens (append mode, idempotent per session_key) a second archive file scoped to
+        the real F1 session_key rather than this connection's stream_id -
+        stream_logs/f1_stream_<timestamp>.jsonl (self._archive_file) still gets one new
+        file per connection exactly as before, but every reconnect/restart against the
+        *same* real F1 session now also appends into stream_logs/f1_stream_session_
+        <session_key>.jsonl, so a session watched across several restarts ends up with
+        one continuous record automatically instead of only being reconstructable
+        after the fact via scripts/merge_stream_logs.py (confirmed necessary live: a
+        single qualifying session watched across a handful of backend restarts today
+        ended up fragmented across just as many separate per-connection files).
+
+        session_key isn't known until SessionInfo's first message, so that specific
+        message doesn't itself land in the mirror - it's already in the per-connection
+        archive (_archive_raw runs before SessionState.apply() reveals session_key),
+        so nothing is actually lost, only this one message not being duplicated.
+        """
+        session_key = self.state.session_key
+        if session_key is None or self._archive_dir is None or self._session_mirror_key == session_key:
+            return
+        if self._session_mirror_file is not None:
+            self._session_mirror_file.close()
+        path = self._archive_dir / f"f1_stream_session_{session_key}.jsonl"
+        self._session_mirror_file = open(path, "a", encoding="utf-8")
+        self._session_mirror_key = session_key
 
     def _spawn(self, coro: Coroutine[Any, Any, Any]) -> None:
         """Schedule a detached background task, keeping a reference so it isn't garbage-collected mid-flight
@@ -375,6 +412,8 @@ class LiveSessionPipeline:
         except Exception:
             logger.exception("Failed to apply event_name=%s to session state, skipping", event_name)
             return
+
+        self._ensure_session_mirror()
 
         await self._broadcast(event_name, diff_to_wire(diff, self.state))
 
@@ -581,6 +620,9 @@ class LiveSessionPipeline:
         if self._archive_file is not None:
             self._archive_file.close()
             self._archive_file = None
+        if self._session_mirror_file is not None:
+            self._session_mirror_file.close()
+            self._session_mirror_file = None
 
 
 # Registry of active pipelines by stream_id - the one place both a live

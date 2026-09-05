@@ -82,6 +82,23 @@ export const getSessionRaceControlEvents = async (session_key: number): Promise<
     return response.data.events as RaceControlEvent[];
 };
 
+export interface QualifyingResultEntry {
+    driver_number: number;
+    position: number | null;
+    best_lap_seconds: number | null;
+    gap_to_leader_seconds: number | null;
+    eliminated: boolean;
+}
+
+export const getQualifyingResults = async (
+    sessionKey: number
+): Promise<Record<string, QualifyingResultEntry[]>> => {
+    const response = await axios.get<{ session_key: number; results: Record<string, QualifyingResultEntry[]> }>(
+        `${API_BASE_URL}/session-qualifying-results/${sessionKey}`
+    );
+    return response.data.results;
+};
+
 export interface ConfirmedRosterEntry {
     driver_number: number;
     tla: string;

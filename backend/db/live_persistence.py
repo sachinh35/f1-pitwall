@@ -183,6 +183,38 @@ async def persist_qualifying_results(
     )
 
 
+async def get_qualifying_results_for_session(session_key: int) -> Dict[str, List[QualifyingResultEntry]]:
+    """
+    Every qualifying segment's persisted final standings for a session, keyed by
+    part ("Q1"/"Q2"/"Q3") - a segment absent from the returned dict simply hasn't
+    ended yet (or was never persisted, e.g. this isn't a qualifying session).
+    """
+    async with DatabaseManager.get_connection() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT qualifying_part, driver_number, position, best_lap_seconds,
+                   gap_to_leader_seconds, eliminated
+            FROM qualifying_results
+            WHERE session_key = $1
+            ORDER BY qualifying_part, position
+            """,
+            session_key,
+        )
+    by_part: Dict[str, List[QualifyingResultEntry]] = {}
+    for row in rows:
+        by_part.setdefault(row["qualifying_part"], []).append(
+            QualifyingResultEntry(
+                driver_number=row["driver_number"],
+                qualifying_part=row["qualifying_part"],
+                position=row["position"],
+                best_lap_seconds=_to_float(row["best_lap_seconds"]),
+                gap_to_leader_seconds=_to_float(row["gap_to_leader_seconds"]),
+                eliminated=row["eliminated"],
+            )
+        )
+    return by_part
+
+
 async def persist_weather_snapshot(session_key: int, weather: Dict[str, Any], ts: Optional[datetime] = None) -> None:
     """
     Insert one WeatherData tick into weather_snapshots. Weather fields arrive as strings on the raw feed.
