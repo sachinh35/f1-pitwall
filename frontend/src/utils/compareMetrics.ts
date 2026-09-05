@@ -7,7 +7,7 @@
  *  - "discrete" metrics (sector1/2/3, lapTime) only produce a new definitive value once
  *    per lap (or per sector) per driver, sourced from TimingData rather than CarData.z.
  *    These are accumulated over the session into a per-metric, per-driver lap history
- *    (see RaceMode.tsx's TimingData handler and upsertLapMetricPoint below).
+ *    (see useLiveSessionState.ts's TimingData handler and upsertLapMetricPoint below).
  */
 
 export type DiscreteCompareMetric = "sector1" | "sector2" | "sector3" | "lapTime";
@@ -123,7 +123,7 @@ export function upsertLapMetricPoint(
  * A notable per-driver moment surfaced as a marker on the Telemetry Compare charts - a pit
  * stop, a tyre change, or a stewards' penalty. Three different upstream sources
  * (DriverTiming.NumberOfPitStops, TimingAppDataInfo.Stints, RaceControlEntry) all normalize
- * down to this one shape (see RaceMode.tsx's driverEventsRef) so CompareWidget only needs a
+ * down to this one shape (see useLiveSessionState.ts's driverEventsRef) so CompareWidget only needs a
  * single prop/rendering path instead of three.
  */
 export type DriverEventKind = "pit" | "tyre" | "penalty";
@@ -273,4 +273,46 @@ export function formatPenaltyLabel(message: string): string {
   const trimmed = message.trim();
   if (trimmed.length <= MAX_PENALTY_LABEL_LENGTH) return trimmed;
   return `${trimmed.slice(0, MAX_PENALTY_LABEL_LENGTH - 1)}…`;
+}
+
+/**
+ * Scans race control entries for genuine penalty events, appending one DriverEventMarker per
+ * new penalty found - shared by useLiveSessionState's initial-snapshot backfill and its live
+ * RaceControlMessages handler (see that hook), since a message's driver/lap/text are fully
+ * known from the entry alone (unlike pit stops/stints, whose *history* isn't reconstructable
+ * from a snapshot's cumulative-count-only fields).
+ *
+ * `seenKeys` and `events` are mutated in place (matching addDriverEvent's own convention) -
+ * `seenKeys` so RaceControlMessages' resent-full-state entries are only ever scanned once,
+ * `events` via addDriverEvent's own dedup.
+ */
+export function scanRaceControlEntriesForPenalties(
+  entries: Record<string, { Message?: string; Lap?: number }>,
+  seenKeys: Set<string>,
+  events: Record<number, DriverEventMarker[]>
+): void {
+  for (const [key, entry] of Object.entries(entries)) {
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    if (!entry.Message || !isPenaltyMessage(entry.Message)) continue;
+    const driverNumber = extractPenaltyDriverNumber(entry.Message);
+    if (driverNumber === null) continue;
+    addDriverEvent(events, driverNumber, {
+      lap: entry.Lap ?? 0,
+      kind: "penalty",
+      label: formatPenaltyLabel(entry.Message),
+    });
+  }
+}
+
+/**
+ * A pit-stop count only ever means "just pitted" on a genuine increase over the last value
+ * seen for this driver - TimingData resends every driver's full current resolved state on
+ * every message (not a delta), so testing e.g. "> 0" would refire this on every unrelated
+ * message once a driver has pitted at all. `previousCount` of undefined means this driver's
+ * baseline isn't known yet (e.g. their very first TimingData message) - never a pit stop,
+ * since there's nothing to compare against.
+ */
+export function isNewPitStop(previousCount: number | undefined, currentCount: number): boolean {
+  return previousCount !== undefined && currentCount > previousCount;
 }

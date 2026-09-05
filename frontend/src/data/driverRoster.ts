@@ -80,7 +80,7 @@ const FALLBACK_ENTRY = (driverNumber: number): RosterEntry => ({
 
 /**
  * The roster fetched from the backend for the current live/simulated session
- * (see RaceMode.tsx), keyed by driver number. Module-level like DRIVER_ROSTER
+ * (see useLiveSessionState.ts), keyed by driver number. Module-level like DRIVER_ROSTER
  * itself, so every leaf component that already calls getRosterEntry() picks
  * it up automatically without prop-drilling a roster map through the tree.
  */

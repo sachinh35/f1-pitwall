@@ -157,6 +157,7 @@ const LapDeltaChart: React.FC<LapDeltaChartProps> = ({ sessionKey, selectedDrive
   const canCompare = sessionKey != null && driverA != null && driverB != null && lapA > 0 && lapB > 0;
 
   const handleCompare = async () => {
+    /* v8 ignore next -- the Compare button (the only caller) is already disabled whenever !canCompare; defensive only */
     if (!canCompare || driverA == null || driverB == null || sessionKey == null) return;
     setLoading(true);
     setError(null);
@@ -174,6 +175,9 @@ const LapDeltaChart: React.FC<LapDeltaChartProps> = ({ sessionKey, selectedDrive
 
   useEffect(() => {
     if (!data) return;
+    // All three canvases are unconditionally rendered whenever data is set (see the
+    // {data && (...)} block below), so these refs are always populated here; defensive only.
+    /* v8 ignore next */
     if (speedCanvasRef.current) {
       drawTraceCanvas(
         speedCanvasRef.current,
@@ -181,6 +185,7 @@ const LapDeltaChart: React.FC<LapDeltaChartProps> = ({ sessionKey, selectedDrive
         data.driver_b.distance_m, data.driver_b.speed_kmh, rosterB?.teamColor ?? "#35d6c4"
       );
     }
+    /* v8 ignore next */
     if (accelCanvasRef.current) {
       drawTraceCanvas(
         accelCanvasRef.current,
@@ -188,6 +193,7 @@ const LapDeltaChart: React.FC<LapDeltaChartProps> = ({ sessionKey, selectedDrive
         data.driver_b.distance_m, data.driver_b.acceleration_ms2, rosterB?.teamColor ?? "#35d6c4"
       );
     }
+    /* v8 ignore next */
     if (deltaCanvasRef.current) {
       drawDeltaCanvas(deltaCanvasRef.current, data);
     }

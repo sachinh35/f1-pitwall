@@ -8,8 +8,10 @@ import {
   formatPitStopLabel,
   formatTyreChangeLabel,
   isDiscreteMetric,
+  isNewPitStop,
   isPenaltyMessage,
   parseTimeToSeconds,
+  scanRaceControlEntriesForPenalties,
   sectorIndexForMetric,
   titleCaseCompound,
   tukeyFences,
@@ -266,5 +268,83 @@ describe("formatPenaltyLabel", () => {
     const result = formatPenaltyLabel(long);
     expect(result.length).toBeLessThan(long.length);
     expect(result.endsWith("…")).toBe(true);
+  });
+});
+
+describe("isNewPitStop", () => {
+  it("is true when the count genuinely increased", () => {
+    expect(isNewPitStop(1, 2)).toBe(true);
+  });
+
+  it("is false when the count is unchanged", () => {
+    expect(isNewPitStop(2, 2)).toBe(false);
+  });
+
+  it("is false when there is no previous baseline yet", () => {
+    expect(isNewPitStop(undefined, 1)).toBe(false);
+  });
+
+  it("is false for a decrease (should never happen, but must not misfire)", () => {
+    expect(isNewPitStop(3, 2)).toBe(false);
+  });
+});
+
+describe("scanRaceControlEntriesForPenalties", () => {
+  it("adds a driver event for a new penalty message", () => {
+    const seenKeys = new Set<string>();
+    const events: Record<number, DriverEventMarker[]> = {};
+
+    scanRaceControlEntriesForPenalties(
+      { "1": { Message: "FIA STEWARDS: 5 SECOND TIME PENALTY FOR CAR 55 (SAI)", Lap: 12 } },
+      seenKeys,
+      events
+    );
+
+    expect(events[55]).toEqual([
+      { lap: 12, kind: "penalty", label: "FIA STEWARDS: 5 SECOND TIME PENALTY FOR CAR 55 (SAI)" },
+    ]);
+  });
+
+  it("never re-scans the same message key twice", () => {
+    const seenKeys = new Set<string>();
+    const events: Record<number, DriverEventMarker[]> = {};
+    const entries = { "1": { Message: "FIA STEWARDS: 5 SECOND TIME PENALTY FOR CAR 55", Lap: 12 } };
+
+    scanRaceControlEntriesForPenalties(entries, seenKeys, events);
+    scanRaceControlEntriesForPenalties(entries, seenKeys, events);
+
+    expect(events[55]).toHaveLength(1);
+  });
+
+  it("ignores non-penalty messages", () => {
+    const seenKeys = new Set<string>();
+    const events: Record<number, DriverEventMarker[]> = {};
+
+    scanRaceControlEntriesForPenalties({ "1": { Message: "GREEN LIGHT - PIT EXIT OPEN", Lap: 1 } }, seenKeys, events);
+
+    expect(events).toEqual({});
+  });
+
+  it("ignores a penalty message with no attributable car number", () => {
+    const seenKeys = new Set<string>();
+    const events: Record<number, DriverEventMarker[]> = {};
+
+    scanRaceControlEntriesForPenalties(
+      { "1": { Message: "FIA STEWARDS: UNDER INVESTIGATION - POSSIBLE PENALTY", Lap: 1 } },
+      seenKeys,
+      events
+    );
+
+    expect(events).toEqual({});
+  });
+
+  it("ignores an entry with no Message", () => {
+    const seenKeys = new Set<string>();
+    const events: Record<number, DriverEventMarker[]> = {};
+
+    scanRaceControlEntriesForPenalties({ "1": { Lap: 1 } }, seenKeys, events);
+
+    expect(events).toEqual({});
+    expect(seenKeys.has("1")).toBe(true);
   });
 });

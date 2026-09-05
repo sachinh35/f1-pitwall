@@ -32,7 +32,7 @@ interface CompareWidgetProps {
   /** A ref, not React state - see TrackMap.tsx for why. */
   telemetryRef: React.MutableRefObject<Record<string, TelemetrySample>>;
   /** A ref, not React state - accumulated once per lap (or per sector) per driver in
-   * RaceMode.tsx's TimingData handler, can update many times per second across ~20 drivers
+   * useLiveSessionState.ts's TimingData handler, can update many times per second across ~20 drivers
    * during a fast replay. */
   lapMetricHistoryRef: React.MutableRefObject<Record<DiscreteCompareMetric, Record<number, LapMetricPoint[]>>>;
   /** Each driver's latest known NumberOfLaps - telemetry samples carry no lap number of
@@ -41,7 +41,7 @@ interface CompareWidgetProps {
    * axis that otherwise has no notion of laps at all. */
   currentLapRef: React.MutableRefObject<Record<number, number>>;
   /** A ref, not React state - pit stops/tyre changes/penalties accumulated across the whole
-   * session per driver in RaceMode.tsx (TimingData/TimingAppData/RaceControlMessages
+   * session per driver in useLiveSessionState.ts (TimingData/TimingAppData/RaceControlMessages
    * handlers), same ref-not-state reasoning as everything else here. Rendered as small
    * hoverable markers over both continuous and discrete charts below. */
   driverEventsRef: React.MutableRefObject<Record<number, DriverEventMarker[]>>;
