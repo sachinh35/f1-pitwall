@@ -11,6 +11,7 @@ import {
   PositionSample,
   RaceControlEntry,
   SessionInfoData,
+  SessionStatusData,
   TelemetrySample,
   TimingAppDataInfo,
   TimingStatsInfo,
@@ -50,6 +51,7 @@ interface SessionState {
   timingStats: Record<string, TimingStatsInfo>;
   topThree: Record<string, TopThreeInfo>;
   trackStatus: TrackStatus;
+  sessionStatus: SessionStatusData;
   weather: Weather;
   sessionInfo: SessionInfoData;
   lapCount: LapCountData;
@@ -70,6 +72,7 @@ const INITIAL_STATE: SessionState = {
   timingStats: {},
   topThree: {},
   trackStatus: {},
+  sessionStatus: {},
   weather: {},
   sessionInfo: {},
   lapCount: {},
@@ -192,6 +195,7 @@ export function useLiveSessionState(streamId: string | undefined): LiveSessionSt
           timingStats: snapshot.timing_stats,
           topThree: snapshot.top_three,
           trackStatus: snapshot.track_status,
+          sessionStatus: snapshot.session_status,
           weather: snapshot.weather,
           sessionInfo: snapshot.session_info,
           lapCount: snapshot.lap_count,
@@ -352,6 +356,9 @@ export function useLiveSessionState(streamId: string | undefined): LiveSessionSt
       },
       TrackStatus: (data) => {
         if (data.track_status) setState((prev) => ({ ...prev, trackStatus: data.track_status! }));
+      },
+      SessionStatus: (data) => {
+        if (data.session_status) setState((prev) => ({ ...prev, sessionStatus: data.session_status! }));
       },
       WeatherData: (data) => {
         if (data.weather) setState((prev) => ({ ...prev, weather: data.weather! }));

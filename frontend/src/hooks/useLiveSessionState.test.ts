@@ -221,15 +221,17 @@ describe("useLiveSessionState", () => {
     expect(result.current.state.topThree["1"]).toEqual({ Tla: "HAM" });
   });
 
-  it("replaces TrackStatus/WeatherData/LapCount/ExtrapolatedClock wholesale", () => {
+  it("replaces TrackStatus/SessionStatus/WeatherData/LapCount/ExtrapolatedClock wholesale", () => {
     const { result } = renderHook(() => useLiveSessionState("stream-1"));
 
     act(() => capturedHandlers.TrackStatus!({ track_status: { Status: "2" } as never }));
+    act(() => capturedHandlers.SessionStatus!({ session_status: { Status: "Aborted" } }));
     act(() => capturedHandlers.WeatherData!({ weather: { AirTemp: "25.0" } as never }));
     act(() => capturedHandlers.LapCount!({ lap_count: { CurrentLap: 3, TotalLaps: 58 } }));
     act(() => capturedHandlers.ExtrapolatedClock!({ extrapolated_clock: { Remaining: "00:15:00" } as never }));
 
     expect(result.current.state.trackStatus).toEqual({ Status: "2" });
+    expect(result.current.state.sessionStatus).toEqual({ Status: "Aborted" });
     expect(result.current.state.weather).toEqual({ AirTemp: "25.0" });
     expect(result.current.state.lapCount).toEqual({ CurrentLap: 3, TotalLaps: 58 });
     expect(result.current.state.extrapolatedClock).toEqual({ Remaining: "00:15:00" });
@@ -510,6 +512,7 @@ describe("useLiveSessionState", () => {
       capturedHandlers.TimingStats!({});
       capturedHandlers.TopThree!({});
       capturedHandlers.TrackStatus!({});
+      capturedHandlers.SessionStatus!({});
       capturedHandlers.WeatherData!({});
       capturedHandlers.LapCount!({});
       capturedHandlers.ExtrapolatedClock!({});

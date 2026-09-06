@@ -23,6 +23,7 @@ function buildSession(sessionType: string | undefined): LiveSessionState {
       timingStats: {},
       topThree: {},
       trackStatus: {},
+      sessionStatus: {},
       weather: {},
       sessionInfo: { Type: sessionType },
       lapCount: {},

@@ -35,6 +35,18 @@ describe("TrackStatusBanner", () => {
     expect(container.querySelector(".status-red")).not.toBeNull();
   });
 
+  it("shows Race Suspended (in red) when the session is Aborted, even if TrackStatus looks clear", () => {
+    const { container } = render(
+      <TrackStatusBanner
+        trackStatus={{ Status: "2", Message: "Yellow" }}
+        sessionStatus={{ Status: "Aborted" }}
+        weather={{}}
+      />
+    );
+    expect(screen.getByText("Race Suspended")).toBeInTheDocument();
+    expect(container.querySelector(".status-red")).not.toBeNull();
+  });
+
   it("shows Wet only when Rainfall is exactly \"1\"", () => {
     const { rerender } = render(<TrackStatusBanner trackStatus={{}} weather={{ Rainfall: "0" }} />);
     expect(screen.getByText("Dry")).toBeInTheDocument();

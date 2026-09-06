@@ -18,6 +18,7 @@ function buildSession(overrides: Partial<LiveSessionState> = {}): LiveSessionSta
       timingStats: {},
       topThree: {},
       trackStatus: {},
+      sessionStatus: {},
       weather: {},
       sessionInfo: { Type: "Race", Meeting: { Name: "Italian Grand Prix" } },
       lapCount: { CurrentLap: 12, TotalLaps: 53 },

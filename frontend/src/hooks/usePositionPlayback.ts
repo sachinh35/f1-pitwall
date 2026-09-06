@@ -1,17 +1,11 @@
 import { useCallback, useEffect, useRef } from "react";
 import { PositionSample } from "../types/raceMode";
-import { computeBatchDurationMs, interpolatePositionSample } from "../utils/positionInterpolation";
+import { interpolatePositionAtTime } from "../utils/positionInterpolation";
 
 // F1's own feed never sends circuit geometry - cars repeatedly tracing the same circuit
 // *is* the track shape (see TrackMap.tsx), so each driver's trail is capped rather than
 // grown forever across a long session.
 const MAX_TRAIL_POINTS_PER_DRIVER = 2000;
-
-interface PlaybackEntry {
-  samples: PositionSample[];
-  startMs: number;
-  durationMs: number;
-}
 
 export interface PositionPlayback {
   /** A ref, not React state - Position.z arrives several times a second per car, and
@@ -38,17 +32,17 @@ export interface PositionPlayback {
 export function usePositionPlayback(): PositionPlayback {
   const positionsRef = useRef<Record<string, PositionSample>>({});
   const trailRef = useRef<Record<string, { x: number; y: number }[]>>({});
-  const playbackRef = useRef<Record<string, PlaybackEntry>>({});
+  const playbackRef = useRef<Record<string, PositionSample[]>>({});
 
   useEffect(() => {
     let rafId: number;
     const step = () => {
-      const now = performance.now();
+      const now = Date.now();
       const next: Record<string, PositionSample> = { ...positionsRef.current };
-      for (const [driverStr, { samples, startMs, durationMs }] of Object.entries(playbackRef.current)) {
+      for (const [driverStr, samples] of Object.entries(playbackRef.current)) {
         /* v8 ignore next -- feedBatch never stores an empty sample list (see its own guard); defensive only */
         if (samples.length === 0) continue;
-        next[driverStr] = interpolatePositionSample(samples, now - startMs, durationMs);
+        next[driverStr] = interpolatePositionAtTime(samples, now);
       }
       positionsRef.current = next;
       rafId = requestAnimationFrame(step);
@@ -58,10 +52,12 @@ export function usePositionPlayback(): PositionPlayback {
   }, []);
 
   const feedBatch = useCallback((positions: Record<string, PositionSample[]>) => {
-    const now = performance.now();
     for (const [driverStr, samples] of Object.entries(positions)) {
       if (samples.length === 0) continue;
-      playbackRef.current[driverStr] = { samples, startMs: now, durationMs: computeBatchDurationMs(samples) };
+      // Playback is driven entirely off each sample's own absolute utc timestamp (see
+      // interpolatePositionAtTime), so the batch just needs to be stored as-is - no
+      // arrival-time anchor to compute or maintain.
+      playbackRef.current[driverStr] = samples;
 
       const trail = trailRef.current[driverStr] ?? (trailRef.current[driverStr] = []);
       for (const sample of samples) {

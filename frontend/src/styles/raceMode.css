@@ -106,6 +106,21 @@
   background: #2a2410;
 }
 
+.rm-paused-pill {
+  display: inline-block;
+  margin-left: 6px;
+  font-family: "DIN Condensed", "Arial Narrow", sans-serif;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  vertical-align: middle;
+  color: var(--flag-yellow);
+  border: 1px solid #4a3f12;
+  background: #2a2410;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
 .rm-back-link {
   color: var(--text-lo);
   text-decoration: none;
@@ -173,9 +188,9 @@
   overflow: hidden;
 }
 /* The one rail panel that absorbs whatever height is left over after its natural-height
- * siblings (Track Map/Track Status/Telemetry Compare), rather than growing past the rail -
- * min-height:0 lets it shrink below its message list's full height so .radio-chat's
- * overflow-y:auto actually activates instead of the panel just growing to fit everything. */
+ * siblings (Track Map/Track Status), rather than growing past the rail - min-height:0
+ * lets it shrink below its message list's full height so .radio-chat's overflow-y:auto
+ * actually activates instead of the panel just growing to fit everything. */
 .rm-panel-fill {
   flex: 1;
   min-height: 0;
@@ -758,6 +773,32 @@
   padding-top: 14px;
   border-top: 1px solid var(--line-800);
 }
+
+/* Telemetry Compare, moved out of the narrow right rail into its own full-width
+ * (.rm-span-2) panel above Lap Delta & Corner Analysis - laid out as a row of widgets
+ * side by side rather than stacked, since a full-width panel finally has the room for
+ * it. Falls back to stacking (via flex-wrap) once there isn't enough width for every
+ * widget's minimum size, same breakpoint behavior .rm-grid already uses. */
+.rm-compare-widgets-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+.rm-compare-widgets-row .compare-widget {
+  flex: 1 1 320px;
+  min-width: 280px;
+}
+/* The vertical-stack divider above doesn't apply between widgets sitting side by side. */
+.rm-compare-widgets-row .compare-widget + .compare-widget {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+/* Bigger canvas than the cramped right-rail version (was 82px) - there's a lot more
+ * width and height to work with in the full-width placement. */
+.rm-compare-panel-wide .rm-compare-canvas {
+  height: 140px;
+}
 .compare-widget-header {
   display: flex;
   align-items: center;
@@ -876,6 +917,10 @@
   letter-spacing: 0.05em;
   font-size: 13px;
   margin-bottom: 12px;
+}
+.flag-banner-top {
+  margin-bottom: 0;
+  align-self: center;
 }
 .flag-banner::before {
   content: "";

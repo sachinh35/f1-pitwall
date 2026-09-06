@@ -20,6 +20,7 @@ import {
   RaceControlEntry,
   RaceModeSnapshot,
   SessionInfoData,
+  SessionStatusData,
   TelemetrySample,
   TimingAppDataInfo,
   TimingStatsInfo,
@@ -46,6 +47,7 @@ export interface RaceModeEventMap {
   TimingStats: { timing_stats?: Record<string, TimingStatsInfo> };
   TopThree: { top_three?: Record<string, TopThreeInfo> };
   TrackStatus: { track_status?: TrackStatus };
+  SessionStatus: { session_status?: SessionStatusData };
   WeatherData: { weather?: Weather };
   SessionInfo: {
     session_info?: SessionInfoData;

@@ -75,6 +75,17 @@ export interface TrackStatus {
   Message?: string;
 }
 
+/**
+ * The SignalR "SessionStatus" topic - the session's own start/stop state (Inactive,
+ * Started, Aborted, Finished, ...). Distinct from TrackStatus, which only reflects
+ * local track/flag conditions: during a red-flag stoppage, marshals can start clearing
+ * individual sectors (TrackStatus cycling back through Yellow) well before the session
+ * itself formally resumes - SessionStatus.Status stays "Aborted" until it actually does.
+ */
+export interface SessionStatusData {
+  Status?: string;
+}
+
 export interface Weather {
   AirTemp?: string;
   TrackTemp?: string;
@@ -90,6 +101,12 @@ export interface SessionInfoData {
   Key?: number;
   Type?: string;
   Name?: string;
+  /** The circuit's local wall-clock scheduled start time - carries no timezone of its
+   * own, see GmtOffset. */
+  StartDate?: string;
+  /** The circuit's UTC offset (e.g. "02:00:00", possibly "-05:00:00") - combine with
+   * StartDate to get the actual UTC instant the session is scheduled to start. */
+  GmtOffset?: string;
 }
 
 export interface LapCountData {
@@ -265,7 +282,7 @@ export interface RaceModeSnapshot {
   weather: Weather;
   session_info: SessionInfoData;
   session_data: Record<string, unknown>;
-  session_status: Record<string, unknown>;
+  session_status: SessionStatusData;
   lap_count: LapCountData;
   extrapolated_clock: ExtrapolatedClockData;
   race_control_messages: Record<string, RaceControlEntry>;

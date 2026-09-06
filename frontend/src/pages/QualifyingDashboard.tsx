@@ -9,6 +9,7 @@ import TeamRadioPanel from "../components/racemode/TeamRadioPanel";
 import TimingTower from "../components/racemode/TimingTower";
 import TrackMap from "../components/racemode/TrackMap";
 import TrackStatusBanner from "../components/racemode/TrackStatusBanner";
+import TrackStatusFlag from "../components/racemode/TrackStatusFlag";
 import { useCompareWidgets } from "../hooks/useCompareWidgets";
 import { useDriverSelection } from "../hooks/useDriverSelection";
 import { LiveSessionState } from "../hooks/useLiveSessionState";
@@ -72,12 +73,17 @@ const QualifyingDashboard: React.FC<QualifyingDashboardProps> = ({ session }) =>
           <div className="rm-panel-label">
             <span>Timing Tower</span>
           </div>
-          <SessionClock
-            lapCount={state.lapCount}
-            extrapolatedClock={state.extrapolatedClock}
-            isQualifying
-            qualifyingPart={state.qualifyingPart}
-          />
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+            <SessionClock
+              lapCount={state.lapCount}
+              extrapolatedClock={state.extrapolatedClock}
+              isQualifying
+              qualifyingPart={state.qualifyingPart}
+              startDate={state.sessionInfo.StartDate}
+              gmtOffset={state.sessionInfo.GmtOffset}
+            />
+            <TrackStatusFlag trackStatus={state.trackStatus} sessionStatus={state.sessionStatus} />
+          </div>
           <div style={{ height: 14 }} />
           <TimingTower
             drivers={state.drivers}
@@ -104,16 +110,23 @@ const QualifyingDashboard: React.FC<QualifyingDashboardProps> = ({ session }) =>
 
           <div className="rm-panel">
             <div className="rm-panel-label">Track Status &amp; Weather</div>
-            <TrackStatusBanner trackStatus={state.trackStatus} weather={state.weather} />
+            <TrackStatusBanner trackStatus={state.trackStatus} sessionStatus={state.sessionStatus} weather={state.weather} />
           </div>
 
-          <div className="rm-panel">
-            <div className="rm-panel-label">
-              <span>Telemetry Compare</span>
-              <button className="add-compare-btn" type="button" onClick={addCompareWidget}>
-                + Add Compare
-              </button>
-            </div>
+          <div className="rm-panel rm-panel-fill">
+            <div className="rm-panel-label">Team Radio</div>
+            <TeamRadioPanel clips={teamRadioClips} />
+          </div>
+        </div>
+
+        <div className="rm-panel rm-span-2 rm-compare-panel-wide">
+          <div className="rm-panel-label">
+            <span>Telemetry Compare</span>
+            <button className="add-compare-btn" type="button" onClick={addCompareWidget}>
+              + Add Compare
+            </button>
+          </div>
+          <div className="rm-compare-widgets-row">
             {compareWidgets.map((w) => (
               <CompareWidget
                 key={w.id}
@@ -127,11 +140,6 @@ const QualifyingDashboard: React.FC<QualifyingDashboardProps> = ({ session }) =>
                 driverEventsRef={refs.driverEventsRef}
               />
             ))}
-          </div>
-
-          <div className="rm-panel rm-panel-fill">
-            <div className="rm-panel-label">Team Radio</div>
-            <TeamRadioPanel clips={teamRadioClips} />
           </div>
         </div>
 
