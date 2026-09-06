@@ -283,25 +283,6 @@ def test_attach_live_stream_failure_returns_500() -> None:
     assert response.status_code == 500
 
 
-# ---- GET /live-stream/current ----
-
-def test_get_current_live_stream_found(tmp_path, monkeypatch) -> None:
-    fake_log = tmp_path / "live_abc.jsonl"
-    fake_log.write_text("{}")
-    monkeypatch.setattr(main, "STREAM_LOGS_DIR", tmp_path)
-    response = client.get("/live-stream/current")
-    assert response.status_code == 200
-    body = response.json()
-    assert body["session_name"] == "abc"
-    assert body["stream_id"] == "live_abc"
-
-
-def test_get_current_live_stream_not_found(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(main, "STREAM_LOGS_DIR", tmp_path)
-    response = client.get("/live-stream/current")
-    assert response.status_code == 404
-
-
 # ---- GET /live/{stream_id}/events ----
 
 def test_stream_live_events_404_when_no_pipeline_and_no_reattach(tmp_path, monkeypatch) -> None:

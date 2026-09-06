@@ -82,13 +82,6 @@ class AttachStreamRequest(BaseModel):
     )
 
 
-class CurrentLiveStreamResponse(BaseModel):
-    """Response model for discovering the currently-active standalone capture, if any."""
-    session_name: str = Field(..., description="The session name, e.g. quali_2026_07_25")
-    stream_id: str = Field(..., description="The stream_id to connect GET /live/{stream_id}/events to")
-    log_file: str = Field(..., description="Path to the raw jsonl file under stream_logs/")
-
-
 class TeamDriverPoolEntry(BaseModel):
     """One driver in a team's known season pool (race-seat or reserve) - see /team-driver-pool."""
     team_name: str

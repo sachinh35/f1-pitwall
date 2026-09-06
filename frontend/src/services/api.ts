@@ -167,12 +167,6 @@ export interface AttachStreamRequest {
     confirmed_roster?: ConfirmedRosterEntry[];
 }
 
-export interface CurrentLiveStreamResponse {
-    session_name: string;
-    stream_id: string;
-    log_file: string;
-}
-
 /**
  * Attach the backend to an in-progress standalone capture process
  * (scripts/capture_stream.py) by tailing its raw jsonl file, instead of opening a
@@ -192,13 +186,6 @@ export const attachLiveStream = async (
             confirmed_roster: confirmedRoster
         } as AttachStreamRequest
     );
-    return response.data;
-};
-
-/** Discover the currently-active standalone capture, if any - lets the UI find and
- * (re)connect to it without hardcoding a session name. */
-export const getCurrentLiveStream = async (): Promise<CurrentLiveStreamResponse> => {
-    const response = await axios.get<CurrentLiveStreamResponse>(`${API_BASE_URL}/live-stream/current`);
     return response.data;
 };
 

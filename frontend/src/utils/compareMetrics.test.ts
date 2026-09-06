@@ -325,6 +325,21 @@ describe("scanRaceControlEntriesForPenalties", () => {
     expect(events).toEqual({});
   });
 
+  it("defaults to lap 0 when the entry carries no Lap field", () => {
+    const seenKeys = new Set<string>();
+    const events: Record<number, DriverEventMarker[]> = {};
+
+    scanRaceControlEntriesForPenalties(
+      { "1": { Message: "FIA STEWARDS: 5 SECOND TIME PENALTY FOR CAR 55 (SAI)" } },
+      seenKeys,
+      events
+    );
+
+    expect(events[55]).toEqual([
+      { lap: 0, kind: "penalty", label: "FIA STEWARDS: 5 SECOND TIME PENALTY FOR CAR 55 (SAI)" },
+    ]);
+  });
+
   it("ignores a penalty message with no attributable car number", () => {
     const seenKeys = new Set<string>();
     const events: Record<number, DriverEventMarker[]> = {};

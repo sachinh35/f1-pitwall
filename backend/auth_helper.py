@@ -11,7 +11,6 @@ import jwt
 import platformdirs
 import requests
 from jwt.algorithms import RSAAlgorithm
-from jwt.exceptions import InvalidTokenError, PyJWTError
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")

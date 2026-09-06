@@ -21,7 +21,6 @@ from api_pydantic_models.live_stream import (
     AuthenticateRequest,
     AuthenticateResponse,
     BrowserAuthStatusResponse,
-    CurrentLiveStreamResponse,
     GetTeamDriverPoolResponse,
     GetTeamRadioResponse,
     SimulateStreamRequest,
@@ -447,20 +446,6 @@ async def attach_live_stream(request: AttachStreamRequest = AttachStreamRequest(
     except Exception as e:
         logging.exception("Error attaching to live capture")
         raise HTTPException(status_code=500, detail=f"Failed to attach to live capture: {str(e)}")
-
-
-@app.get("/live-stream/current", response_model=CurrentLiveStreamResponse)
-async def get_current_live_stream() -> CurrentLiveStreamResponse:
-    """
-    Discover the currently-active standalone capture (if any) - lets the frontend find
-    and (re)connect to it without hardcoding a session name, including after its own
-    reload/reconnect following a backend restart.
-    """
-    log_path = _latest_live_capture_log()
-    if log_path is None:
-        raise HTTPException(status_code=404, detail="No live capture found under stream_logs/live_*.jsonl")
-    session_name = log_path.stem[len("live_"):]
-    return CurrentLiveStreamResponse(session_name=session_name, stream_id=log_path.stem, log_file=str(log_path))
 
 
 @app.get("/live/{stream_id}/events")

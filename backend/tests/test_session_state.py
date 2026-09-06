@@ -413,7 +413,7 @@ def test_session_info_without_key_fields_does_not_clobber_existing_values() -> N
     assert state.meeting_key == 1275
 
 
-# ---- latest_telemetry_sample / latest_position_sample ----
+# ---- latest_telemetry_sample ----
 
 def test_latest_telemetry_sample_none_when_no_data_buffered() -> None:
     state = SessionState()
@@ -427,15 +427,6 @@ def test_latest_telemetry_sample_reflects_most_recent_car_data() -> None:
     sample = state.latest_telemetry_sample(some_driver)
     assert sample is not None
     assert set(sample.keys()) == {"speed_kmh", "rpm", "gear", "throttle_pct", "brake_pct", "drs"}
-
-
-def test_latest_position_sample_reflects_most_recent_position() -> None:
-    state = SessionState()
-    state.apply("Position.z", FIXTURES["position_raw_payload"])
-    some_driver = next(iter(state._telemetry_buffers))
-    sample = state.latest_position_sample(some_driver)
-    assert sample is not None
-    assert set(sample.keys()) == {"x", "y", "z", "status"}
 
 
 # ---- CarData.z / Position.z end-to-end through the reducer, using real payloads ----

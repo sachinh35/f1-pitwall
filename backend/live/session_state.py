@@ -301,7 +301,7 @@ class StateDiff:
     # order - F1 batches ~5 samples spaced ~260ms apart into one message (confirmed live:
     # messages arrive roughly once a second, each containing a burst covering that whole
     # second). diff_to_wire used to forward only the buffer's single latest point per
-    # message (state.latest_position_sample), silently discarding the other ~80% of F1's
+    # message (a single buffered sample), silently discarding the other ~80% of F1's
     # own position resolution - confirmed live as the cause of visibly jagged/stepped track
     # map motion despite F1 itself streaming smoothly. Carrying the full batch here lets the
     # wire message (and the frontend's playback) use the real ~4Hz resolution instead.
@@ -457,13 +457,6 @@ class SessionState:
             "brake_pct": buffer.brake_pct[-1],
             "drs": buffer.drs[-1],
         }
-
-    def latest_position_sample(self, driver_number: int) -> Optional[Dict[str, Any]]:
-        """The most recent Position.z sample buffered for this driver's in-progress lap, or None if none yet."""
-        buffer = self._telemetry_buffers.get(driver_number)
-        if buffer is None or not buffer.x:
-            return None
-        return {"x": buffer.x[-1], "y": buffer.y[-1], "z": buffer.z[-1], "status": buffer.position_status[-1]}
 
     def snapshot(self) -> Dict[str, Any]:
         """Full current state - sent to a newly-connected SSE client, or periodically

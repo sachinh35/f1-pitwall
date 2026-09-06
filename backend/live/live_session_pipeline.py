@@ -229,9 +229,9 @@ def diff_to_wire(diff: StateDiff, state: SessionState) -> Dict[str, Any]:
         }
     elif diff.event_name == "Position.z":
         # The *full* batch of samples this message carried per driver (see
-        # StateDiff.new_position_samples), not just state.latest_position_sample's single
-        # latest point - the frontend plays these back at their real spacing so on-screen
-        # motion matches F1's true ~4Hz update rate instead of jumping once a second.
+        # StateDiff.new_position_samples), not just a single latest point - the frontend
+        # plays these back at their real spacing so on-screen motion matches F1's true
+        # ~4Hz update rate instead of jumping once a second.
         wire["positions"] = {str(d): samples for d, samples in diff.new_position_samples.items()}
 
     if diff.completed_laps:
