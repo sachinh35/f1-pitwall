@@ -18,11 +18,13 @@ export interface RosterEntry {
   teamColor: string;
 }
 
-// 2026 race-seat lineup (22 drivers, 11 teams - Audi and Cadillac both joined
+// 2026 race-seat lineup (23 drivers, 11 teams - Audi and Cadillac both joined
 // for 2026, taking the grid from 10 teams to 11). Driver numbers verified
 // against formula1.com's 2026 driver-numbers announcement - note several
-// changed from 2025 (Verstappen #1->#3, Norris #4->#1, Tsunoda moved to a
-// Red Bull reserve role with Lindblad taking Racing Bulls' second seat).
+// changed from 2025 (Verstappen #1->#3, Norris #4->#1). Tsunoda (#22) was
+// initially assumed to have moved to a reserve role, but the live DriverList
+// feed confirms he's still racing for Racing Bulls - see the Monza 2026 race
+// capture, driver 22's BroadcastName/TeamName fields.
 //
 // Team colors sourced from github.com/Mahshadn/f1-constructors-colour-codes
 // (2026-season.md), which itself flags them as unofficial approximations
@@ -40,6 +42,7 @@ export const DRIVER_ROSTER: Record<number, RosterEntry> = {
   14: { driverNumber: 14, tla: "ALO", fullName: "Fernando Alonso", team: "Aston Martin", teamColor: "#229971" },
   16: { driverNumber: 16, tla: "LEC", fullName: "Charles Leclerc", team: "Ferrari", teamColor: "#E8002D" },
   18: { driverNumber: 18, tla: "STR", fullName: "Lance Stroll", team: "Aston Martin", teamColor: "#229971" },
+  22: { driverNumber: 22, tla: "TSU", fullName: "Yuki Tsunoda", team: "Racing Bulls", teamColor: "#6692FF" },
   23: { driverNumber: 23, tla: "ALB", fullName: "Alexander Albon", team: "Williams", teamColor: "#64C4FF" },
   27: { driverNumber: 27, tla: "HUL", fullName: "Nico Hulkenberg", team: "Audi", teamColor: "#F50537" },
   30: { driverNumber: 30, tla: "LAW", fullName: "Liam Lawson", team: "Racing Bulls", teamColor: "#6692FF" },

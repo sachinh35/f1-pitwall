@@ -25,8 +25,10 @@ describe("getRosterEntry", () => {
     });
   });
 
-  it("has exactly 22 drivers, matching the 2026 grid (11 teams x 2)", () => {
-    expect(Object.keys(DRIVER_ROSTER)).toHaveLength(22);
+  it("has exactly 23 drivers - the 2026 grid (11 teams x 2) plus Tsunoda (#22), " +
+    "confirmed still racing (for Racing Bulls) by the live DriverList feed despite " +
+    "the initial assumption he'd moved to a reserve role", () => {
+    expect(Object.keys(DRIVER_ROSTER)).toHaveLength(23);
   });
 
   it("includes Cadillac, the 11th team new for 2026", () => {
